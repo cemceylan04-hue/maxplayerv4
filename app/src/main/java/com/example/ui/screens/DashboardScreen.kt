@@ -1,0 +1,3868 @@
+package com.example.ui.screens
+
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import android.content.res.Configuration
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.R
+import com.example.auth.findActivity
+import com.example.model.PlaylistRepository
+import com.example.ui.theme.RedPrimary
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.example.model.SupportRepository
+import com.example.model.db.PlaybackProgressEntity
+import com.example.parser.ItemType
+import com.example.parser.M3uItem
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DashboardScreen(
+    onPlayStream: (M3uItem) -> Unit,
+    onNavigateToAuth: () -> Unit = {},
+    onNavigateToPlaylists: () -> Unit = {},
+    onNavigateToDeviceInfo: () -> Unit = {}
+) {
+    var selectedTabIndex by remember { mutableStateOf(com.example.model.PlayerRepository.lastDashboardTabIndex) }
+    LaunchedEffect(selectedTabIndex) {
+        com.example.model.PlayerRepository.lastDashboardTabIndex = selectedTabIndex
+    }
+    val playWithPlaylist: (M3uItem, List<M3uItem>) -> Unit = { item, playlist ->
+        com.example.model.PlayerRepository.currentPlaylist = playlist
+        com.example.model.PlayerRepository.isFavoritesPlaylist = (selectedTabIndex == 4 && item.type != ItemType.SERIES)
+        onPlayStream(item)
+    }
+
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val orientationMode by com.example.model.SettingsManager.orientationMode.collectAsState()
+    val isPortrait = orientationMode == 1 ||
+        configuration.orientation == Configuration.ORIENTATION_PORTRAIT ||
+        configuration.screenWidthDp < configuration.screenHeightDp ||
+        configuration.screenWidthDp < 560
+    val isLandscape = !isPortrait
+    val currentLang by com.example.model.AppLanguageManager.currentLanguage.collectAsState()
+    val allItems by PlaylistRepository.playlist.collectAsState()
+    val hiddenCategories by com.example.model.CategoryManager.hiddenCategories.collectAsState()
+    val visibleItems = remember(allItems, hiddenCategories) {
+        if (hiddenCategories.isEmpty()) {
+            allItems
+        } else {
+            allItems.filter { !hiddenCategories.contains(it.group) }
+        }
+    }
+    val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
+    val db = remember { com.example.model.db.AppDatabase.getDatabase(context) }
+    val recentMovies by db.iptvDao().getRecentProgressForType("MOVIE").collectAsState(initial = emptyList())
+    val recentSeries by db.iptvDao().getRecentProgressForType("SERIES").collectAsState(initial = emptyList())
+    val recentAll: List<PlaybackProgressEntity> by db.iptvDao().getAllRecentProgress().collectAsState(initial = emptyList())
+
+    // Tabs: 0: Home (Anasayfa), 1: Live (Canlı), 2: Movies (Flim), 3: Series (Dizi), 4: Favorites (Favori)
+    val tabs = listOf(
+        stringResource(R.string.nav_home),
+        stringResource(R.string.tab_live),
+        stringResource(R.string.tab_movies),
+        stringResource(R.string.tab_series),
+        stringResource(R.string.nav_favorites)
+    )
+    val tabIcons = listOf(
+        Icons.Default.Home,
+        Icons.Default.LiveTv,
+        Icons.Default.Movie,
+        Icons.Default.Tv,
+        Icons.Default.Favorite
+    )
+
+    var isSearchExpanded by remember { mutableStateOf(com.example.model.PlayerRepository.lastDashboardSearchQuery.isNotEmpty()) }
+    var searchQuery by remember { mutableStateOf(com.example.model.PlayerRepository.lastDashboardSearchQuery) }
+    LaunchedEffect(searchQuery) {
+        com.example.model.PlayerRepository.lastDashboardSearchQuery = searchQuery
+    }
+    var showMenu by remember { mutableStateOf(false) }
+    var showCategoryDrawer by remember { mutableStateOf(false) }
+
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        if (PlaylistRepository.playlist.value.isEmpty() && !PlaylistRepository.isLoading.value) {
+            val targetUrl = PlaylistRepository.resolveLastOrFirstPlaylistUrl(context)
+            if (!targetUrl.isNullOrBlank()) {
+                PlaylistRepository.loadPlaylist(context, targetUrl)
+            }
+        }
+        scope.launch {
+            try {
+                com.example.model.SupportRepository.syncTicketsFromOdoo()
+            } catch (e: Exception) {}
+            try {
+                com.example.model.UpdateManager.checkForUpdates(context, manual = false)
+            } catch (e: Exception) {}
+            try {
+                val targetUserId = com.example.model.DeviceManager.getCurrentUserId()
+                    ?: com.example.model.DeviceManager.getCurrentUserEmail()
+                    ?: com.example.model.DeviceManager.getDeviceId()
+                com.example.model.OdooIntegrationManager.sendDeviceToPortalAndSyncAll(
+                    context = context,
+                    userId = targetUserId,
+                    userName = com.example.model.DeviceManager.getCurrentUserName() ?: "",
+                    userEmail = com.example.model.DeviceManager.getCurrentUserEmail() ?: ""
+                )
+            } catch (e: Exception) {}
+        }
+        while (true) {
+            kotlinx.coroutines.delay(120_000) // Every 2 minutes instead of 25 seconds
+            try {
+                // Do not interrupt network bandwidth or disk I/O while playing movies or live channels
+                if (com.example.model.PlayerRepository.currentlyPlayingItem != null) {
+                    continue
+                }
+                val targetUserId = com.example.model.DeviceManager.getCurrentUserId()
+                    ?: com.example.model.DeviceManager.getCurrentUserEmail()
+                    ?: com.example.model.DeviceManager.getDeviceId()
+                com.example.model.OdooIntegrationManager.syncPlaylistsFromOdoo(context, targetUserId)
+            } catch (e: Exception) {}
+        }
+    }
+
+    // Navigation and Sheets state
+    var selectedMovie by remember { mutableStateOf<M3uItem?>(null) }
+    var selectedMoviePlaylist by remember { mutableStateOf<List<M3uItem>>(emptyList()) }
+    var selectedSeries by remember { mutableStateOf<List<M3uItem>?>(com.example.model.PlayerRepository.lastSelectedSeries) }
+    LaunchedEffect(selectedSeries) {
+        com.example.model.PlayerRepository.lastSelectedSeries = selectedSeries
+    }
+    var showSettingsSheet by remember { mutableStateOf(false) }
+    var showProfileSheet by remember { mutableStateOf(false) }
+    var showSupportSheet by remember { mutableStateOf(false) }
+    var showAllFixturesSheet by remember { mutableStateOf(false) }
+    var showProUpgradeDialog by remember { mutableStateOf(false) }
+
+    var itemToUnlock by remember { mutableStateOf<M3uItem?>(null) }
+    var playlistForUnlock by remember { mutableStateOf<List<M3uItem>?>(null) }
+    var seriesToUnlock by remember { mutableStateOf<List<M3uItem>?>(null) }
+
+    // TMDb and ESPN state
+    var tmdbWeeklyItems by remember { mutableStateOf<List<ImdbUpcomingItem>>(emptyList()) }
+    var tmdb30DaysItems by remember { mutableStateOf<List<ImdbUpcomingItem>>(emptyList()) }
+    var tmdb60DaysItems by remember { mutableStateOf<List<ImdbUpcomingItem>>(emptyList()) }
+    var liveFixtures by remember { mutableStateOf<List<MatchFixture>>(getDefaultFixtures()) }
+    var selectedImdbTimeFrame by remember { mutableStateOf(ImdbTimeFrame.ALL) }
+    var selectedImdbItem by remember { mutableStateOf<ImdbUpcomingItem?>(null) }
+    var notifiedTmdbIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var isFixturesRefreshing by remember { mutableStateOf(false) }
+    var isMediaDataRefreshing by remember { mutableStateOf(false) }
+
+    val refreshFixtures: (Boolean) -> Unit = { manual ->
+        scope.launch {
+            isFixturesRefreshing = true
+            withContext(Dispatchers.IO) {
+                try {
+                    val calEspn = Calendar.getInstance()
+                    calEspn.add(Calendar.DAY_OF_YEAR, -2)
+                    val sdfEspn = SimpleDateFormat("yyyyMMdd", Locale.US)
+                    val dateStart = sdfEspn.format(calEspn.time)
+                    calEspn.add(Calendar.DAY_OF_YEAR, 30)
+                    val dateEnd = sdfEspn.format(calEspn.time)
+
+                    val leaguesToFetch = listOf(
+                        "tur.1" to "Trendyol Süper Lig",
+                        "uefa.champions" to "UEFA Şampiyonlar Ligi",
+                        "uefa.europa" to "UEFA Avrupa Ligi"
+                    )
+
+                    val allFetched = mutableListOf<MatchFixture>()
+                    for ((leagueCode, leagueName) in leaguesToFetch) {
+                        try {
+                            val espnUrl = "https://site.api.espn.com/apis/site/v2/sports/soccer/$leagueCode/scoreboard?dates=$dateStart-$dateEnd&limit=100"
+                            val espnConn = URL(espnUrl).openConnection() as HttpURLConnection
+                            espnConn.connectTimeout = 7000
+                            espnConn.readTimeout = 7000
+                            if (espnConn.responseCode == 200) {
+                                val espnJson = espnConn.inputStream.bufferedReader().use { it.readText() }
+                                val parsed = parseEspnFixtures(espnJson, leagueName)
+                                allFetched.addAll(parsed)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+
+                    val combined = getCombinedFixtures(allFetched)
+                    if (combined.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            liveFixtures = combined
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    withContext(Dispatchers.Main) {
+                        isFixturesRefreshing = false
+                        if (manual) {
+                            Toast.makeText(context, "Günün maçları ve fikstür güncellendi.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val refreshMediaData: (Boolean) -> Unit = { manual ->
+        scope.launch {
+            isMediaDataRefreshing = true
+            withContext(Dispatchers.IO) {
+                try {
+                    val apiKey = "15745c1c46c264d1170db38ea66049e0"
+                    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                    val cal = Calendar.getInstance()
+                    val dateToday = sdf.format(cal.time)
+                    cal.add(Calendar.DAY_OF_YEAR, 30)
+                    val date30 = sdf.format(cal.time)
+                    cal.add(Calendar.DAY_OF_YEAR, 30)
+                    val date60 = sdf.format(cal.time)
+
+                    // 1. Weekly Trending (Movies & TV Series)
+                    try {
+                        val urlWeekly = "https://api.themoviedb.org/3/trending/all/week?api_key=$apiKey&language=tr-TR"
+                        val connWeekly = URL(urlWeekly).openConnection() as HttpURLConnection
+                        connWeekly.connectTimeout = 7000
+                        connWeekly.readTimeout = 7000
+                        if (connWeekly.responseCode == 200) {
+                            val jsonWeekly = connWeekly.inputStream.bufferedReader().use { it.readText() }
+                            val parsedWeekly = parseTmdbList(jsonWeekly, ImdbTimeFrame.WEEKLY, context)
+                            if (parsedWeekly.isNotEmpty()) {
+                                withContext(Dispatchers.Main) { tmdbWeeklyItems = parsedWeekly }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // 2. 30 Days Upcoming (Monthly)
+                    try {
+                        val url30 = "https://api.themoviedb.org/3/discover/movie?api_key=$apiKey&language=tr-TR&primary_release_date.gte=$dateToday&primary_release_date.lte=$date30&sort_by=popularity.desc"
+                        val conn30 = URL(url30).openConnection() as HttpURLConnection
+                        conn30.connectTimeout = 7000
+                        conn30.readTimeout = 7000
+                        if (conn30.responseCode == 200) {
+                            val json30 = conn30.inputStream.bufferedReader().use { it.readText() }
+                            val parsed30 = parseTmdbList(json30, ImdbTimeFrame.THIRTY_DAYS, context)
+                            if (parsed30.isNotEmpty()) {
+                                withContext(Dispatchers.Main) { tmdb30DaysItems = parsed30 }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // 3. 60 Days Upcoming
+                    try {
+                        val url60 = "https://api.themoviedb.org/3/discover/movie?api_key=$apiKey&language=tr-TR&primary_release_date.gte=$dateToday&primary_release_date.lte=$date60&sort_by=popularity.desc"
+                        val conn60 = URL(url60).openConnection() as HttpURLConnection
+                        conn60.connectTimeout = 7000
+                        conn60.readTimeout = 7000
+                        if (conn60.responseCode == 200) {
+                            val json60 = conn60.inputStream.bufferedReader().use { it.readText() }
+                            val parsed60 = parseTmdbList(json60, ImdbTimeFrame.SIXTY_DAYS, context)
+                            if (parsed60.isNotEmpty()) {
+                                withContext(Dispatchers.Main) { tmdb60DaysItems = parsed60 }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    withContext(Dispatchers.Main) {
+                        isMediaDataRefreshing = false
+                        if (manual) {
+                            Toast.makeText(context, "Haftalık ve aylık film/dizi verileri güncellendi.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Automatic Fetch on launch
+    LaunchedEffect(Unit) {
+        refreshFixtures(false)
+        refreshMediaData(false)
+    }
+
+    // Automatic Fetch when navigating to tabs if empty
+    LaunchedEffect(selectedTabIndex) {
+        if (selectedTabIndex in 2..3 && tmdbWeeklyItems.isEmpty()) {
+            refreshMediaData(false)
+        }
+    }
+
+    val currentType: ItemType? = remember(selectedTabIndex) {
+        when (selectedTabIndex) {
+            1 -> ItemType.LIVE
+            2 -> ItemType.MOVIE
+            3 -> ItemType.SERIES
+            else -> null
+        }
+    }
+
+    val knownGroupsMap by PlaylistRepository.knownGroups.collectAsState()
+    val categoryLoadingStates by PlaylistRepository.categoryLoadingStates.collectAsState()
+    val typeLoadingStates by PlaylistRepository.typeLoadingStates.collectAsState()
+
+    val displayGroups = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, knownGroupsMap) {
+        when {
+            currentType != null -> PlaylistRepository.getGroups(currentType)
+            selectedTabIndex == 4 -> {
+                val allBouquet = PlaylistRepository.getGroups()
+                val favGroupSet = visibleItems
+                    .filter { favoriteUrls.contains(it.url) }
+                    .mapNotNull { it.group?.takeIf { g -> g.isNotBlank() } }
+                    .toSet()
+                val orderedFav = allBouquet.filter { favGroupSet.contains(it) }
+                val remaining = favGroupSet.filter { !allBouquet.contains(it) }
+                (orderedFav + remaining).distinct()
+            }
+            else -> emptyList()
+        }
+    }
+    var selectedGroup by remember(selectedTabIndex) {
+        mutableStateOf(com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex])
+    }
+
+    val currentActivePlaylistUrl by PlaylistRepository.currentPlaylistUrl.collectAsState()
+    var lastObservedPlaylistUrl by remember { mutableStateOf(currentActivePlaylistUrl) }
+    LaunchedEffect(currentActivePlaylistUrl) {
+        if (currentActivePlaylistUrl != null && currentActivePlaylistUrl != lastObservedPlaylistUrl) {
+            lastObservedPlaylistUrl = currentActivePlaylistUrl
+            selectedGroup = null
+            searchQuery = ""
+            selectedTabIndex = 0
+            com.example.model.PlayerRepository.clearForNewPlaylist()
+        }
+    }
+    LaunchedEffect(displayGroups, selectedTabIndex) {
+        if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+            val saved = com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex]
+            if (saved != null && displayGroups.contains(saved)) {
+                selectedGroup = saved
+            } else if (selectedGroup == null || !displayGroups.contains(selectedGroup)) {
+                selectedGroup = displayGroups.first()
+            }
+        } else if (selectedGroup != null && displayGroups.isNotEmpty() && !displayGroups.contains(selectedGroup)) {
+            selectedGroup = if (selectedTabIndex in 1..3) displayGroups.firstOrNull() else null
+        }
+    }
+    LaunchedEffect(selectedTabIndex, selectedGroup) {
+        val grp = selectedGroup
+        if (grp != null) {
+            com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex] = grp
+        } else {
+            com.example.model.PlayerRepository.lastDashboardGroupByTab.remove(selectedTabIndex)
+        }
+    }
+
+    // On-demand fetch for Xtream Codes when user switches to Live, Movies, Series, or selects a Category:
+    // "canlıya tıkladıgımda canlıları flımlerı tıkkladıgımda flımlerı dızılerı tıkladıgımda dızılerı dırek kokten ceksın"
+    LaunchedEffect(selectedTabIndex, selectedGroup, currentType) {
+        if (selectedTabIndex in 1..3 && currentType != null) {
+            if (selectedGroup != null) {
+                PlaylistRepository.ensureCategoryLoaded(context, selectedGroup, currentType)
+            } else {
+                PlaylistRepository.ensureTypeLoaded(context, currentType)
+            }
+        }
+    }
+
+    // Resolves series episodes on-demand when user clicks a series
+    LaunchedEffect(selectedSeries) {
+        val s = selectedSeries?.firstOrNull()
+        if (s != null && s.url.contains("series_placeholder")) {
+            val episodes = PlaylistRepository.getSeriesEpisodes(context, s)
+            if (episodes.isNotEmpty() && episodes.first().url != s.url) {
+                selectedSeries = episodes
+            }
+        }
+    }
+    var selectedFavoriteFilter by remember(selectedTabIndex) {
+        mutableStateOf(com.example.model.PlayerRepository.lastDashboardFavoriteFilter)
+    }
+    LaunchedEffect(selectedFavoriteFilter) {
+        com.example.model.PlayerRepository.lastDashboardFavoriteFilter = selectedFavoriteFilter
+    }
+    var lastBackPressTime by remember { mutableLongStateOf(0L) }
+    var sidePanelGroupToUnlock by remember { mutableStateOf<String?>(null) }
+
+    BackHandler(enabled = true) {
+        when {
+            showMenu -> showMenu = false
+            showCategoryDrawer -> showCategoryDrawer = false
+            selectedMovie != null -> selectedMovie = null
+            selectedSeries != null -> selectedSeries = null
+            showSettingsSheet -> showSettingsSheet = false
+            showProfileSheet -> showProfileSheet = false
+            showSupportSheet -> showSupportSheet = false
+            showAllFixturesSheet -> showAllFixturesSheet = false
+            showProUpgradeDialog -> showProUpgradeDialog = false
+            selectedImdbItem != null -> selectedImdbItem = null
+            itemToUnlock != null -> {
+                itemToUnlock = null
+                playlistForUnlock = null
+            }
+            seriesToUnlock != null -> seriesToUnlock = null
+            sidePanelGroupToUnlock != null -> sidePanelGroupToUnlock = null
+            isSearchExpanded || searchQuery.isNotEmpty() -> {
+                isSearchExpanded = false
+                searchQuery = ""
+            }
+            selectedGroup != null && selectedTabIndex in 1..3 && displayGroups.isNotEmpty() && selectedGroup != displayGroups.first() -> {
+                selectedGroup = displayGroups.first()
+            }
+            selectedGroup != null && selectedTabIndex !in 1..3 -> selectedGroup = null
+            selectedTabIndex != 0 -> selectedTabIndex = 0
+            else -> {
+                val now = System.currentTimeMillis()
+                if (now - lastBackPressTime < 2500) {
+                    context.findActivity()?.finish()
+                } else {
+                    lastBackPressTime = now
+                    Toast.makeText(context, context.getString(R.string.press_again_to_exit), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    val currentTabItems = remember(visibleItems, selectedTabIndex, selectedGroup, searchQuery, favoriteUrls) {
+        when (selectedTabIndex) {
+            1 -> {
+                PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.LIVE).filter {
+                    it.title.contains(searchQuery, ignoreCase = true)
+                }
+            }
+            2 -> {
+                PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.MOVIE).filter {
+                    it.title.contains(searchQuery, ignoreCase = true)
+                }
+            }
+            3 -> {
+                PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.SERIES).filter {
+                    it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true)
+                }
+            }
+            4 -> {
+                visibleItems.filter {
+                    favoriteUrls.contains(it.url) &&
+                        (selectedGroup == null || it.group == selectedGroup) &&
+                        (it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true))
+                }
+            }
+            else -> emptyList()
+        }
+    }
+
+    val groupCounts = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls) {
+        when {
+            currentType != null -> {
+                visibleItems.asSequence().filter { it.type == currentType }
+                    .groupingBy { it.group ?: "" }
+                    .eachCount()
+            }
+            selectedTabIndex == 4 -> {
+                visibleItems.asSequence().filter { favoriteUrls.contains(it.url) }
+                    .groupingBy { it.group ?: "" }
+                    .eachCount()
+            }
+            else -> emptyMap()
+        }
+    }
+    val totalTypeCount = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls) {
+        when {
+            currentType != null -> visibleItems.count { it.type == currentType }
+            selectedTabIndex == 4 -> visibleItems.count { favoriteUrls.contains(it.url) }
+            else -> 0
+        }
+    }
+
+    val imdbReleases = remember(tmdbWeeklyItems, tmdb30DaysItems, tmdb60DaysItems, selectedImdbTimeFrame) {
+        val all = tmdbWeeklyItems + tmdb30DaysItems + tmdb60DaysItems
+        when (selectedImdbTimeFrame) {
+            ImdbTimeFrame.ALL -> all.distinctBy { it.id }
+            ImdbTimeFrame.WEEKLY -> tmdbWeeklyItems
+            ImdbTimeFrame.THIRTY_DAYS -> tmdb30DaysItems
+            ImdbTimeFrame.SIXTY_DAYS -> tmdb60DaysItems
+        }
+    }
+
+    if (itemToUnlock != null) {
+        val currentItem = itemToUnlock
+        com.example.ui.components.PinUnlockDialog(
+            title = currentItem?.title,
+            subtitle = "Kanalı izlemek için PIN girin",
+            onUnlock = {
+                val item = itemToUnlock
+                val pl = playlistForUnlock
+                itemToUnlock = null
+                playlistForUnlock = null
+                if (item != null) {
+                    if (pl != null) {
+                        playWithPlaylist(item, pl)
+                    } else {
+                        onPlayStream(item)
+                    }
+                }
+            },
+            onDismiss = {
+                itemToUnlock = null
+                playlistForUnlock = null
+            }
+        )
+    }
+
+    if (seriesToUnlock != null) {
+        val sFirst = seriesToUnlock?.firstOrNull()
+        com.example.ui.components.PinUnlockDialog(
+            title = sFirst?.seriesName ?: sFirst?.title,
+            subtitle = "Diziyi izlemek için PIN girin",
+            onUnlock = {
+                val s = seriesToUnlock
+                seriesToUnlock = null
+                if (s != null) selectedSeries = s
+            },
+            onDismiss = { seriesToUnlock = null }
+        )
+    }
+
+    if (sidePanelGroupToUnlock != null) {
+        val gName = sidePanelGroupToUnlock
+        com.example.ui.components.PinUnlockDialog(
+            title = gName,
+            subtitle = "Kategoriye erişmek için PIN girin",
+            onUnlock = {
+                val grp = sidePanelGroupToUnlock
+                sidePanelGroupToUnlock = null
+                if (grp != null) {
+                    selectedGroup = grp
+                }
+            },
+            onDismiss = { sidePanelGroupToUnlock = null }
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0)
+        ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .padding(paddingValues)
+                .fillMaxSize()
+                .padding(top = 15.dp, bottom = 15.dp)
+        ) {
+    val actionsMenuContent = @Composable {
+                IconButton(onClick = { isSearchExpanded = !isSearchExpanded }, modifier = Modifier.size(42.dp)) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = stringResource(R.string.search_placeholder),
+                        tint = if (isSearchExpanded) MaterialTheme.colorScheme.primary else Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Box {
+                    IconButton(onClick = { showMenu = true }, modifier = Modifier.size(42.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.menu_desc), tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                        modifier = Modifier
+                            .heightIn(max = if (isLandscape) 220.dp else 390.dp)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.profile_desc), fontSize = 13.sp) },
+                            onClick = {
+                                showProfileSheet = true
+                                showMenu = false
+                            },
+                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            modifier = Modifier.height(40.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.support_tickets_title), fontSize = 13.sp) },
+                            onClick = { showSupportSheet = true; showMenu = false },
+                            leadingIcon = { Icon(Icons.Default.SupportAgent, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            modifier = Modifier.height(40.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.playlists_title), fontSize = 13.sp) },
+                            onClick = { onNavigateToPlaylists(); showMenu = false },
+                            leadingIcon = { Icon(Icons.Default.Subscriptions, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            modifier = Modifier.height(40.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.device_info_title), fontSize = 13.sp) },
+                            onClick = { onNavigateToDeviceInfo(); showMenu = false },
+                            leadingIcon = { Icon(Icons.Default.QrCode2, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) },
+                            modifier = Modifier.height(40.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_desc), fontSize = 13.sp) },
+                            onClick = {
+                                showSettingsSheet = true
+                                showMenu = false
+                            },
+                            leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            modifier = Modifier.height(40.dp)
+                        )
+                        if (!com.example.model.DeviceManager.isProPurchased()) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.btn_upgrade_package), color = Color(0xFFFFB300), fontWeight = FontWeight.Bold, fontSize = 13.sp) },
+                                onClick = { showProUpgradeDialog = true; showMenu = false },
+                                leadingIcon = { Icon(Icons.Default.Diamond, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(18.dp)) },
+                                modifier = Modifier.height(40.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Top App Bar / Navigation Header
+            if (isPortrait) {
+                // Portrait Mode: Top Bar with Logo & Title + Actions
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clickable { selectedTabIndex = 0 }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = androidx.compose.ui.text.buildAnnotatedString {
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = Color(0xFFF43F28),
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                ) {
+                                    append("MAXX ")
+                                }
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                ) {
+                                    append("PLAYER ")
+                                }
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = Color(0xFFF43F28),
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                ) {
+                                    append("+")
+                                }
+                            },
+                            fontSize = 17.sp,
+                            letterSpacing = 1.8.sp,
+                            maxLines = 1
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    actionsMenuContent()
+                }
+
+                // Portrait Mode: Full-width non-scrollable Tab Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF141822))
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    tabs.forEachIndexed { index, title ->
+                        val isSelected = selectedTabIndex == index
+                        var isItemFocused by remember { mutableStateOf(false) }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { isItemFocused = it.isFocused }
+                                .border(
+                                    width = if (isItemFocused) 3.dp else if (isSelected) 1.5.dp else 0.dp,
+                                    color = if (isItemFocused || isSelected) RedPrimary else Color.Transparent,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable {
+                                    selectedTabIndex = index
+                                    selectedGroup = null
+                                    searchQuery = ""
+                                }
+                                .background(
+                                    if (isItemFocused) RedPrimary.copy(alpha = 0.28f)
+                                    else if (isSelected) RedPrimary.copy(alpha = 0.18f)
+                                    else Color(0xFF1C2230).copy(alpha = 0.5f),
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .padding(vertical = 6.dp, horizontal = 2.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    tabIcons[index],
+                                    contentDescription = title,
+                                    tint = if (isSelected || isItemFocused) RedPrimary else Color(0xFFB0BEC5),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = title,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected || isItemFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                    color = if (isSelected || isItemFocused) Color.White else Color(0xFFCFD8DC),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .height(2.5.dp)
+                                        .width(if (isSelected || isItemFocused) 28.dp else 0.dp)
+                                        .background(
+                                            if (isSelected || isItemFocused) RedPrimary else Color.Transparent,
+                                            RoundedCornerShape(1.5.dp)
+                                        )
+                                )
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(color = Color(0xFF1E2430), thickness = 1.dp)
+            } else {
+                // Landscape Mode: Single-row bar with Logo + Non-scrollable Tabs + Actions
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .padding(end = 12.dp)
+                            .clickable { selectedTabIndex = 0 }
+                    ) {
+                        Text(
+                            text = androidx.compose.ui.text.buildAnnotatedString {
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = Color(0xFFF43F28),
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                ) {
+                                    append("MAXX ")
+                                }
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                ) {
+                                    append("PLAYER ")
+                                }
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = Color(0xFFF43F28),
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                ) {
+                                    append("+")
+                                }
+                            },
+                            fontSize = 15.sp,
+                            letterSpacing = 1.6.sp,
+                            maxLines = 1
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        tabs.forEachIndexed { index, title ->
+                            val isSelected = selectedTabIndex == index
+                            var isItemFocused by remember { mutableStateOf(false) }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .onFocusChanged { isItemFocused = it.isFocused }
+                                    .border(
+                                        width = if (isItemFocused) 3.dp else if (isSelected) 1.5.dp else 0.dp,
+                                        color = if (isItemFocused || isSelected) RedPrimary else Color.Transparent,
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable {
+                                        selectedTabIndex = index
+                                        selectedGroup = null
+                                        searchQuery = ""
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 4.dp)
+                                    .background(
+                                        if (isItemFocused) RedPrimary.copy(alpha = 0.28f)
+                                        else if (isSelected) RedPrimary.copy(alpha = 0.16f)
+                                        else Color.Transparent,
+                                        RoundedCornerShape(8.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        tabIcons[index],
+                                        contentDescription = title,
+                                        tint = if (isSelected || isItemFocused) RedPrimary else Color(0xFFB0BEC5),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = title,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isSelected || isItemFocused) FontWeight.ExtraBold else FontWeight.Medium,
+                                        color = if (isSelected || isItemFocused) Color.White else Color(0xFFCFD8DC),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    actionsMenuContent()
+                }
+            }
+
+            // Support Notification Banner
+            val notification by SupportRepository.unreadNotification.collectAsState()
+            if (notification != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clickable {
+                            showSupportSheet = true
+                            SupportRepository.dismissNotification()
+                        },
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1B5E20)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = Color(0xFF69F0AE), modifier = Modifier.size(24.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(stringResource(R.string.notification_banner_title), fontWeight = FontWeight.Bold, color = Color.White, fontSize = 12.sp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(stringResource(R.string.notification_banner_msg), color = Color.LightGray, fontSize = 10.sp)
+                        }
+                        TextButton(onClick = {
+                            showSupportSheet = true
+                            SupportRepository.dismissNotification()
+                        }) {
+                            Text(stringResource(R.string.view_ticket_btn), color = Color(0xFF69F0AE), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        }
+                        IconButton(onClick = { SupportRepository.dismissNotification() }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+
+            // Search Bar, Favorite Sub-Category Tabs & Category Filter Trigger
+            val favMoviesTotal = remember(currentTabItems) { currentTabItems.count { it.type == ItemType.MOVIE } }
+            val favSeriesTotal = remember(currentTabItems) {
+                currentTabItems.filter { it.type == ItemType.SERIES }
+                    .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
+                    .size
+            }
+            val favLiveTotal = remember(currentTabItems) { currentTabItems.count { it.type == ItemType.LIVE } }
+            val favTotalCount = favMoviesTotal + favSeriesTotal + favLiveTotal
+
+            AnimatedVisibility(
+                visible = isSearchExpanded ||
+                    (selectedTabIndex == 4 && (currentTabItems.isNotEmpty() || selectedGroup != null || searchQuery.isNotEmpty())) ||
+                    (!isLandscape && selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) ||
+                    (isLandscape && selectedTabIndex in 2..3 && isMediaDataRefreshing)
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (isSearchExpanded) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text(stringResource(R.string.search_placeholder), color = Color.Gray, fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search_placeholder), tint = Color.Gray) },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = Color.DarkGray,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(20.dp),
+                                singleLine = true
+                            )
+                        } else if (selectedTabIndex == 4) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                val favTabs = listOf(
+                                    Triple(0, "${stringResource(R.string.timeframe_all)} ($favTotalCount)", Icons.Default.Favorite),
+                                    Triple(1, "${stringResource(R.string.fav_section_live)} ($favLiveTotal)", Icons.Default.LiveTv),
+                                    Triple(2, "${stringResource(R.string.fav_section_movies)} ($favMoviesTotal)", Icons.Default.Movie),
+                                    Triple(3, "${stringResource(R.string.fav_section_series)} ($favSeriesTotal)", Icons.Default.Tv)
+                                )
+                                favTabs.forEach { (filterIdx, label, icon) ->
+                                    val isFilterSelected = selectedFavoriteFilter == filterIdx
+                                    val accentColor = when (filterIdx) {
+                                        1 -> Color(0xFF42A5F5)
+                                        2 -> Color(0xFFE50914)
+                                        3 -> Color(0xFFFFB300)
+                                        else -> MaterialTheme.colorScheme.primary
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (isFilterSelected) accentColor.copy(alpha = 0.22f) else Color(0xFF1A1F2B),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isFilterSelected) accentColor else Color(0xFF2D3548)
+                                        ),
+                                        modifier = Modifier
+                                            .height(36.dp)
+                                            .clickable { selectedFavoriteFilter = filterIdx }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = icon,
+                                                contentDescription = null,
+                                                tint = if (isFilterSelected) accentColor else Color(0xFFB0BEC5),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = label,
+                                                color = if (isFilterSelected) Color.White else Color(0xFFCFD8DC),
+                                                fontSize = 12.sp,
+                                                fontWeight = if (isFilterSelected) FontWeight.Bold else FontWeight.Medium,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+
+                        // Quick Refresh Button based on selected tab
+                        if (selectedTabIndex in 2..4) {
+                            IconButton(
+                                onClick = { refreshMediaData(true) },
+                                enabled = !isMediaDataRefreshing,
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                            ) {
+                                if (isMediaDataRefreshing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Film/Dizi Verilerini Güncelle",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        val showCategoryIcon = if (isLandscape && selectedTabIndex in 1..3) {
+                            false
+                        } else {
+                            selectedTabIndex in 1..4 && displayGroups.isNotEmpty()
+                        }
+                        if (showCategoryIcon) {
+                            IconButton(
+                                onClick = { showCategoryDrawer = true },
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(
+                                        if (selectedGroup != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        RoundedCornerShape(12.dp)
+                                    )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.List,
+                                    contentDescription = stringResource(R.string.categories),
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    if (isSearchExpanded && selectedTabIndex == 4 && currentTabItems.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 2.dp)
+                                .horizontalScroll(rememberScrollState()),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val favTabs = listOf(
+                                Triple(0, "Tümü ($favTotalCount)", Icons.Default.Favorite),
+                                Triple(1, "Canlı TV ($favLiveTotal)", Icons.Default.LiveTv),
+                                Triple(2, "Filmler ($favMoviesTotal)", Icons.Default.Movie),
+                                Triple(3, "Diziler ($favSeriesTotal)", Icons.Default.Tv)
+                            )
+                            favTabs.forEach { (filterIdx, label, icon) ->
+                                val isFilterSelected = selectedFavoriteFilter == filterIdx
+                                val accentColor = when (filterIdx) {
+                                    1 -> Color(0xFF42A5F5)
+                                    2 -> Color(0xFFE50914)
+                                    3 -> Color(0xFFFFB300)
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isFilterSelected) accentColor.copy(alpha = 0.22f) else Color(0xFF1A1F2B),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isFilterSelected) accentColor else Color(0xFF2D3548)
+                                    ),
+                                    modifier = Modifier
+                                        .height(34.dp)
+                                        .clickable { selectedFavoriteFilter = filterIdx }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = icon,
+                                            contentDescription = null,
+                                            tint = if (isFilterSelected) accentColor else Color(0xFFB0BEC5),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = label,
+                                            color = if (isFilterSelected) Color.White else Color(0xFFCFD8DC),
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isFilterSelected) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            val isBgLoading by PlaylistRepository.isLoading.collectAsState()
+            val bgProgress by PlaylistRepository.loadingProgress.collectAsState()
+            val bgDetail by PlaylistRepository.loadingDetail.collectAsState()
+            if (isBgLoading && allItems.isNotEmpty()) {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Kanallar yükleniyor: ${allItems.size} kanal aktif",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (bgDetail.isNotBlank()) bgDetail else "%$bgProgress",
+                            fontSize = 11.sp,
+                            color = Color.LightGray
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    LinearProgressIndicator(
+                        progress = bgProgress / 100f,
+                        modifier = Modifier.fillMaxWidth().height(3.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = Color(0xFF222222)
+                    )
+                }
+            }
+
+            // Screen Content by Tab
+            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (isLandscape && selectedTabIndex in 1..3) {
+                    DashboardCategorySidePanel(
+                        displayGroups = displayGroups,
+                        selectedGroup = selectedGroup,
+                        onSelectGroup = { group ->
+                            selectedGroup = group
+                        },
+                        groupCounts = groupCounts,
+                        totalTypeCount = totalTypeCount,
+                        modifier = Modifier
+                            .width(260.dp)
+                            .fillMaxHeight(),
+                        onRequestUnlock = { group ->
+                            sidePanelGroupToUnlock = group
+                        }
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                ) {
+                    when (selectedTabIndex) {
+                    0 -> {
+                        // TAB 0: HOME / ANASAYFA
+                        val heroItem = remember(visibleItems) { visibleItems.firstOrNull { it.type == ItemType.MOVIE && !it.logo.isNullOrEmpty() } ?: visibleItems.firstOrNull() }
+                        val popularMovies = remember(visibleItems) { visibleItems.asSequence().filter { it.type == ItemType.MOVIE }.take(15).toList() }
+                        val liveChannels = remember(visibleItems) { visibleItems.asSequence().filter { it.type == ItemType.LIVE }.take(15).toList() }
+                        val seriesGroups = remember(visibleItems) {
+                            val map = LinkedHashMap<String, MutableList<M3uItem>>()
+                            for (item in visibleItems) {
+                                if (item.type == ItemType.SERIES) {
+                                    val sName = item.seriesName ?: item.title
+                                    val existing = map[sName]
+                                    if (existing != null) {
+                                        existing.add(item)
+                                    } else if (map.size < 15) {
+                                        map[sName] = mutableListOf(item)
+                                    }
+                                }
+                            }
+                            map
+                        }
+
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 32.dp)
+                        ) {
+                            // Reklam / Duyuru Slider Banner (Web arayüzü reklam yönetimi entegrasyonu)
+                            item {
+                                com.example.ui.components.AdSliderBanner(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                                    height = if (isLandscape) 112.dp else 100.dp
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+
+                            // Hero Banner
+                            if (heroItem != null) {
+                                item {
+                                    HeroBanner(item = heroItem, onClick = {
+                                        if (com.example.model.ParentalControlManager.isItemLocked(heroItem)) {
+                                            itemToUnlock = heroItem
+                                        } else if (heroItem.type == ItemType.MOVIE) {
+                                            selectedMoviePlaylist = listOf(heroItem)
+                                            selectedMovie = heroItem
+                                        } else {
+                                            playWithPlaylist(heroItem, listOf(heroItem))
+                                        }
+                                    })
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                }
+                            }
+
+                            // ESPN Match Fixtures
+                            if (liveFixtures.isNotEmpty()) {
+                                item {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.SportsSoccer, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Günün Maçları & Fikstür",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 16.sp,
+                                                    color = Color.White
+                                                )
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                if (isFixturesRefreshing) {
+                                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.primary)
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                } else {
+                                                    IconButton(
+                                                        onClick = { refreshFixtures(true) },
+                                                        modifier = Modifier.size(24.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.Refresh, contentDescription = "Fikstürü Güncelle", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                                    }
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                }
+                                                Text(
+                                                    text = stringResource(R.string.filter_all),
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.clickable { showAllFixturesSheet = true }
+                                                )
+                                            }
+                                        }
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(liveFixtures) { fixture ->
+                                                MatchFixtureCard(fixture = fixture, onClick = {
+                                                    // Find matching live sports channel
+                                                    val matchedChannel = allItems.find { channel ->
+                                                        channel.type == ItemType.LIVE && fixture.channelKeywords.any { kw -> channel.title.contains(kw, ignoreCase = true) }
+                                                    }
+                                                    if (matchedChannel != null) {
+                                                        if (com.example.model.ParentalControlManager.isItemLocked(matchedChannel)) {
+                                                            itemToUnlock = matchedChannel
+                                                        } else {
+                                                            playWithPlaylist(matchedChannel, listOf(matchedChannel))
+                                                        }
+                                                    } else {
+                                                        Toast.makeText(context, "${fixture.homeTeam} - ${fixture.awayTeam} maç yayını bulunamadı", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                })
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(18.dp))
+                                    }
+                                }
+                            }
+
+                            // IMDb / TMDb Upcoming Releases
+                            if (imdbReleases.isNotEmpty()) {
+                                item {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        if (isPortrait) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Surface(
+                                                            color = Color(0xFFF5C518),
+                                                            shape = RoundedCornerShape(4.dp)
+                                                        ) {
+                                                            Text(
+                                                                "TMDB",
+                                                                color = Color.Black,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                fontSize = 11.sp,
+                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            text = "Yakında Vizyondakiler",
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 16.sp,
+                                                            color = Color.White,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+
+                                                    if (isMediaDataRefreshing) {
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier.size(16.dp),
+                                                            strokeWidth = 1.5.dp,
+                                                            color = MaterialTheme.colorScheme.primary
+                                                        )
+                                                    } else {
+                                                        IconButton(
+                                                            onClick = { refreshMediaData(true) },
+                                                            modifier = Modifier.size(28.dp)
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Default.Refresh,
+                                                                contentDescription = "Film/Dizi Verilerini Güncelle",
+                                                                tint = MaterialTheme.colorScheme.primary,
+                                                                modifier = Modifier.size(18.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(4.dp))
+
+                                                LazyRow(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    items(ImdbTimeFrame.values().toList()) { tf ->
+                                                        FilterChip(
+                                                            selected = selectedImdbTimeFrame == tf,
+                                                            onClick = { selectedImdbTimeFrame = tf },
+                                                            label = {
+                                                                Text(
+                                                                    text = stringResource(tf.labelRes),
+                                                                    fontSize = 11.sp,
+                                                                    maxLines = 1,
+                                                                    softWrap = false
+                                                                )
+                                                            },
+                                                            colors = FilterChipDefaults.filterChipColors(
+                                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                                                selectedLabelColor = Color.White
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Surface(
+                                                        color = Color(0xFFF5C518),
+                                                        shape = RoundedCornerShape(4.dp)
+                                                    ) {
+                                                        Text(
+                                                            "TMDB",
+                                                            color = Color.Black,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            fontSize = 11.sp,
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(
+                                                        text = "Yakında Vizyondakiler",
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 16.sp,
+                                                        color = Color.White
+                                                    )
+                                                }
+
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    if (isMediaDataRefreshing) {
+                                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.primary)
+                                                    } else {
+                                                        IconButton(
+                                                            onClick = { refreshMediaData(true) },
+                                                            modifier = Modifier.size(24.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.Refresh, contentDescription = "Film/Dizi Verilerini Güncelle", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                                        }
+                                                    }
+                                                    ImdbTimeFrame.values().forEach { tf ->
+                                                        FilterChip(
+                                                            selected = selectedImdbTimeFrame == tf,
+                                                            onClick = { selectedImdbTimeFrame = tf },
+                                                            label = { Text(stringResource(tf.labelRes), fontSize = 10.sp, maxLines = 1, softWrap = false) },
+                                                            colors = FilterChipDefaults.filterChipColors(
+                                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                                                selectedLabelColor = Color.White
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(imdbReleases) { item ->
+                                                val isNotified = notifiedTmdbIds.contains(item.id)
+                                                ImdbCard(
+                                                    item = item,
+                                                    isNotified = isNotified,
+                                                    onNotifyToggle = {
+                                                        notifiedTmdbIds = if (isNotified) {
+                                                            notifiedTmdbIds - item.id
+                                                        } else {
+                                                            Toast.makeText(context, "'${item.title}' için bildirim planlandı", Toast.LENGTH_SHORT).show()
+                                                            notifiedTmdbIds + item.id
+                                                        }
+                                                    },
+                                                    onClick = { selectedImdbItem = item }
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(18.dp))
+                                    }
+                                }
+                            }
+
+                            // Recent Progress (Son İzlenenler)
+                            if (recentAll.isNotEmpty()) {
+                                item {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Text(
+                                            text = stringResource(R.string.continue_watching),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 16.sp,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                                        )
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(recentAll) { progress ->
+                                                ProgressCard(progress = progress, onClick = {
+                                                    val matched = allItems.find { it.url == progress.url }
+                                                    if (matched != null) {
+                                                        if (com.example.model.ParentalControlManager.isItemLocked(matched)) {
+                                                            itemToUnlock = matched
+                                                        } else {
+                                                            playWithPlaylist(matched, listOf(matched))
+                                                        }
+                                                    }
+                                                })
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(18.dp))
+                                    }
+                                }
+                            }
+
+                            // Popular Movies
+                            if (popularMovies.isNotEmpty()) {
+                                item {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.tab_movies),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 16.sp,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                text = stringResource(R.string.filter_all),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.clickable { selectedTabIndex = 2 }
+                                            )
+                                        }
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(popularMovies) { movie ->
+                                                MovieCard(item = movie, onClick = {
+                                                    if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                                        itemToUnlock = movie
+                                                        playlistForUnlock = popularMovies
+                                                    } else {
+                                                        selectedMoviePlaylist = popularMovies
+                                                        selectedMovie = movie
+                                                    }
+                                                })
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(18.dp))
+                                    }
+                                }
+                            }
+
+                            // Popular Series
+                            if (seriesGroups.isNotEmpty()) {
+                                item {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.tab_series),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 16.sp,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                text = stringResource(R.string.filter_all),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.clickable { selectedTabIndex = 3 }
+                                            )
+                                        }
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(seriesGroups.keys.take(15).toList()) { sName ->
+                                                val episodes = seriesGroups[sName] ?: emptyList()
+                                                val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.first()
+                                                Box(modifier = Modifier.width(122.dp)) {
+                                                    SeriesCard(
+                                                        seriesName = sName,
+                                                        item = posterItem,
+                                                        episodeCount = episodes.size,
+                                                        episodes = episodes,
+                                                        onPlayEpisode = { ep ->
+                                                            if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
+                                                                playlistForUnlock = episodes
+                                                                itemToUnlock = ep
+                                                            } else if (ep.url.contains("series_placeholder")) {
+                                                                selectedSeries = episodes
+                                                            } else {
+                                                                playWithPlaylist(ep, episodes)
+                                                            }
+                                                        },
+                                                        onClick = {
+                                                            if (com.example.model.ParentalControlManager.isItemLocked(posterItem)) {
+                                                                seriesToUnlock = episodes
+                                                            } else {
+                                                                selectedSeries = episodes
+                                                            }
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(18.dp))
+                                    }
+                                }
+                            }
+
+                            // Live TV Channels
+                            if (liveChannels.isNotEmpty()) {
+                                item {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.tab_live),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 16.sp,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                text = stringResource(R.string.filter_all),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.clickable { selectedTabIndex = 1 }
+                                            )
+                                        }
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            items(liveChannels) { channel ->
+                                                Box(modifier = Modifier.width(130.dp)) {
+                                                    ChannelCard(item = channel, onClick = {
+                                                        if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
+                                                            itemToUnlock = channel
+                                                        } else {
+                                                            playWithPlaylist(channel, liveChannels)
+                                                        }
+                                                    })
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        // TAB 1: LIVE CHANNELS (CANLI)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Reklam / Duyuru Slider Banner
+                            com.example.ui.components.AdSliderBanner(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                height = if (isLandscape) 100.dp else 92.dp
+                            )
+
+                            if (currentTabItems.isEmpty()) {
+                                val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
+                                val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
+                                Box(
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center,
+                                        modifier = Modifier.padding(24.dp)
+                                    ) {
+                                        if (isCategoryLoading || isTypeLoading) {
+                                            CircularProgressIndicator(
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(36.dp),
+                                                strokeWidth = 3.dp
+                                            )
+                                            Spacer(modifier = Modifier.height(16.dp))
+                                            Text(
+                                                text = if (selectedGroup != null) "$selectedGroup kanalları yükleniyor..." else "Canlı kanallar yükleniyor...",
+                                                color = Color.White,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        } else {
+                                            Icon(
+                                                Icons.Default.LiveTv,
+                                                contentDescription = null,
+                                                tint = Color.Gray,
+                                                modifier = Modifier.size(56.dp)
+                                            )
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            Text(
+                                                text = if (searchQuery.isNotEmpty()) "Arama kriterine uygun kanal bulunamadı" else "Kanal bulunamadı",
+                                                color = Color.Gray,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                LazyVerticalGrid(
+                                    columns = GridCells.Adaptive(minSize = 120.dp),
+                                    contentPadding = PaddingValues(14.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                ) {
+                                    items(currentTabItems) { channel ->
+                                        ChannelCard(item = channel, onClick = {
+                                            if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
+                                                itemToUnlock = channel
+                                            } else {
+                                                playWithPlaylist(channel, currentTabItems)
+                                            }
+                                        })
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    2 -> {
+                        // TAB 2: MOVIES (FLİM)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Reklam / Duyuru Slider Banner
+                            com.example.ui.components.AdSliderBanner(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                height = if (isLandscape) 100.dp else 92.dp
+                            )
+
+                            if (currentTabItems.isEmpty()) {
+                                val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
+                                val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
+                                Box(
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                    modifier = Modifier.padding(24.dp)
+                                ) {
+                                    if (isCategoryLoading || isTypeLoading) {
+                                        CircularProgressIndicator(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(36.dp),
+                                            strokeWidth = 3.dp
+                                        )
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Text(
+                                            text = if (selectedGroup != null) "$selectedGroup filmleri yükleniyor..." else "Filmler yükleniyor...",
+                                            color = Color.White,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    } else {
+                                        Icon(
+                                            Icons.Default.Movie,
+                                            contentDescription = null,
+                                            tint = Color.Gray,
+                                            modifier = Modifier.size(56.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(
+                                            text = if (searchQuery.isNotEmpty()) "Arama kriterine uygun film bulunamadı" else "Film bulunamadı",
+                                            color = Color.Gray,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            if (isLandscape && selectedGroup != null) {
+                                LazyVerticalGrid(
+                                    columns = GridCells.Adaptive(minSize = 110.dp),
+                                    contentPadding = PaddingValues(16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                ) {
+                                    items(currentTabItems) { movie ->
+                                        MovieCard(item = movie, onClick = {
+                                            if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                                itemToUnlock = movie
+                                                playlistForUnlock = currentTabItems
+                                            } else {
+                                                selectedMoviePlaylist = currentTabItems
+                                                selectedMovie = movie
+                                            }
+                                        })
+                                    }
+                                }
+                            } else {
+                                val uncategorizedText = stringResource(R.string.uncategorized)
+                                val itemsByGroup = remember(currentTabItems, uncategorizedText) { currentTabItems.groupBy { it.group ?: uncategorizedText } }
+
+                                LazyColumn(
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    contentPadding = PaddingValues(bottom = 32.dp)
+                                ) {
+                                    if (currentTabItems.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
+                                        val heroMovie = currentTabItems.randomOrNull() ?: currentTabItems.first()
+                                        item {
+                                            HeroBanner(item = heroMovie, onClick = {
+                                                if (com.example.model.ParentalControlManager.isItemLocked(heroMovie)) {
+                                                    itemToUnlock = heroMovie
+                                                    playlistForUnlock = currentTabItems
+                                                } else {
+                                                    selectedMoviePlaylist = currentTabItems
+                                                    selectedMovie = heroMovie
+                                                }
+                                            })
+                                        }
+                                    }
+
+                                    if (recentMovies.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
+                                        item {
+                                            Text(
+                                                text = stringResource(R.string.continue_watching),
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp, end = 16.dp)
+                                            )
+                                            LazyRow(
+                                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                items(recentMovies) { progress ->
+                                                    ProgressCard(progress = progress, onClick = {
+                                                        val matchedItem = allItems.find { it.url == progress.url }
+                                                        if (matchedItem != null) {
+                                                            if (com.example.model.ParentalControlManager.isItemLocked(matchedItem)) {
+                                                                itemToUnlock = matchedItem
+                                                                playlistForUnlock = listOf(matchedItem)
+                                                            } else {
+                                                                selectedMoviePlaylist = listOf(matchedItem)
+                                                                selectedMovie = matchedItem
+                                                            }
+                                                        }
+                                                    })
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    itemsByGroup.forEach { (groupName, groupItems) ->
+                                        if (groupItems.isNotEmpty()) {
+                                            item {
+                                                Text(
+                                                    text = groupName.uppercase(),
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 15.sp,
+                                                    modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp, end = 16.dp)
+                                                )
+                                                LazyRow(
+                                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    items(groupItems) { movie ->
+                                                        MovieCard(item = movie, onClick = {
+                                                            if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                                                itemToUnlock = movie
+                                                                playlistForUnlock = groupItems
+                                                            } else {
+                                                                selectedMoviePlaylist = groupItems
+                                                                selectedMovie = movie
+                                                            }
+                                                        })
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    }
+
+                    3 -> {
+                        // TAB 3: SERIES (DİZİ)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Reklam / Duyuru Slider Banner
+                            com.example.ui.components.AdSliderBanner(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                height = if (isLandscape) 100.dp else 92.dp
+                            )
+
+                            if (currentTabItems.isEmpty()) {
+                                val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
+                                val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
+                                Box(
+                                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center,
+                                        modifier = Modifier.padding(24.dp)
+                                    ) {
+                                        if (isCategoryLoading || isTypeLoading) {
+                                            CircularProgressIndicator(
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(36.dp),
+                                                strokeWidth = 3.dp
+                                            )
+                                            Spacer(modifier = Modifier.height(16.dp))
+                                            Text(
+                                                text = if (selectedGroup != null) "$selectedGroup dizileri yükleniyor..." else "Diziler yükleniyor...",
+                                                color = Color.White,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        } else {
+                                            Icon(
+                                                Icons.Default.Tv,
+                                                contentDescription = null,
+                                                tint = Color.Gray,
+                                                modifier = Modifier.size(56.dp)
+                                            )
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            Text(
+                                                text = if (searchQuery.isNotEmpty()) "Arama kriterine uygun dizi bulunamadı" else "Dizi bulunamadı",
+                                                color = Color.Gray,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                val seriesGroups = remember(currentTabItems) { currentTabItems.groupBy { it.seriesName ?: it.title } }
+
+                                LazyVerticalGrid(
+                                    columns = GridCells.Adaptive(minSize = 110.dp),
+                                    contentPadding = PaddingValues(16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                ) {
+                                    if (recentSeries.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
+                                        item(span = { GridItemSpan(maxLineSpan) }) {
+                                            Column {
+                                                Text(
+                                                    text = stringResource(R.string.continue_watching),
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(bottom = 8.dp)
+                                                )
+                                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    items(recentSeries) { progress ->
+                                                        ProgressCard(progress = progress, onClick = {
+                                                            val matchedItem = allItems.find { it.url == progress.url }
+                                                            if (matchedItem != null) {
+                                                                if (com.example.model.ParentalControlManager.isItemLocked(matchedItem)) {
+                                                                    itemToUnlock = matchedItem
+                                                                } else {
+                                                                    playWithPlaylist(matchedItem, listOf(matchedItem))
+                                                                }
+                                                            }
+                                                        })
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(16.dp))
+                                            }
+                                        }
+                                    }
+
+                                    items(seriesGroups.keys.toList()) { seriesName ->
+                                        val episodes = seriesGroups[seriesName] ?: emptyList()
+                                        val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.first()
+                                        SeriesCard(
+                                            seriesName = seriesName,
+                                            item = posterItem,
+                                            episodeCount = episodes.size,
+                                            episodes = episodes,
+                                            onPlayEpisode = { ep ->
+                                                if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
+                                                    playlistForUnlock = episodes
+                                                    itemToUnlock = ep
+                                                } else if (ep.url.contains("series_placeholder")) {
+                                                    selectedSeries = episodes
+                                                } else {
+                                                    playWithPlaylist(ep, episodes)
+                                                }
+                                            },
+                                            onClick = {
+                                                if (com.example.model.ParentalControlManager.isItemLocked(posterItem)) {
+                                                    seriesToUnlock = episodes
+                                                } else {
+                                                    selectedSeries = episodes
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    4 -> {
+                        // TAB 4: FAVORITES (Filmler, Diziler ve Canlı TV'ler ayrı bölümler halinde)
+                        if (currentTabItems.isEmpty()) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.FavoriteBorder, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(64.dp))
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(stringResource(R.string.no_favorites_yet), color = Color.Gray, fontSize = 14.sp)
+                                }
+                            }
+                        } else {
+                            val allSeriesMap = remember(visibleItems) {
+                                visibleItems.filter { it.type == ItemType.SERIES }
+                                    .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
+                            }
+                            val recentFavorites = remember(recentAll, favoriteUrls) {
+                                recentAll.filter { favoriteUrls.contains(it.url) }
+                            }
+                            val favMovies = remember(currentTabItems) {
+                                currentTabItems.filter { it.type == ItemType.MOVIE }
+                            }
+                            val favSeriesGroups = remember(currentTabItems) {
+                                currentTabItems.filter { it.type == ItemType.SERIES }
+                                    .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
+                                    .entries
+                                    .toList()
+                            }
+                            val favLive = remember(currentTabItems) {
+                                currentTabItems.filter { it.type == ItemType.LIVE }
+                            }
+
+                            val showLiveSection = (selectedFavoriteFilter == 0 || selectedFavoriteFilter == 1) && favLive.isNotEmpty()
+                            val showMoviesSection = (selectedFavoriteFilter == 0 || selectedFavoriteFilter == 2) && favMovies.isNotEmpty()
+                            val showSeriesSection = (selectedFavoriteFilter == 0 || selectedFavoriteFilter == 3) && favSeriesGroups.isNotEmpty()
+
+                            val liveBadgeLabel = stringResource(R.string.tab_live)
+                            val movieBadgeLabel = stringResource(R.string.tab_movies)
+
+                            if (!showLiveSection && !showMoviesSection && !showSeriesSection) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        val emptyIcon = when (selectedFavoriteFilter) {
+                                            1 -> Icons.Default.LiveTv
+                                            2 -> Icons.Default.Movie
+                                            3 -> Icons.Default.Tv
+                                            else -> Icons.Default.FavoriteBorder
+                                        }
+                                        val emptyText = when (selectedFavoriteFilter) {
+                                            1 -> stringResource(R.string.fav_empty_live)
+                                            2 -> stringResource(R.string.fav_empty_movies)
+                                            3 -> stringResource(R.string.fav_empty_series)
+                                            else -> stringResource(R.string.no_favorites_yet)
+                                        }
+                                        Icon(emptyIcon, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(56.dp))
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Text(emptyText, color = Color.Gray, fontSize = 14.sp)
+                                        if (selectedFavoriteFilter != 0) {
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            OutlinedButton(
+                                                onClick = { selectedFavoriteFilter = 0 },
+                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Text(stringResource(R.string.fav_show_all_btn), color = Color.White, fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                LazyVerticalGrid(
+                                    columns = GridCells.Adaptive(minSize = 115.dp),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    if (recentFavorites.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty() && selectedFavoriteFilter == 0) {
+                                        item(key = "fav_recent_section", span = { GridItemSpan(maxLineSpan) }) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Text(
+                                                    text = stringResource(R.string.continue_watching),
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 14.sp,
+                                                    modifier = Modifier.padding(bottom = 8.dp)
+                                                )
+                                                LazyRow(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(92.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    items(recentFavorites, key = { "recent_fav_" + it.url }) { progress ->
+                                                        ProgressCard(progress = progress, onClick = {
+                                                            val matchedItem = allItems.find { it.url == progress.url }
+                                                            if (matchedItem != null) {
+                                                                if (com.example.model.ParentalControlManager.isItemLocked(matchedItem)) {
+                                                                    itemToUnlock = matchedItem
+                                                                } else {
+                                                                    playWithPlaylist(matchedItem, currentTabItems)
+                                                                }
+                                                            }
+                                                        })
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                            }
+                                        }
+                                    }
+
+                                    // 1. CANLI TV'LER BÖLÜMÜ
+                                    if (showLiveSection) {
+                                        item(key = "fav_header_live", span = { GridItemSpan(maxLineSpan) }) {
+                                            Surface(
+                                                color = Color(0xFF161B24),
+                                                shape = RoundedCornerShape(10.dp),
+                                                border = BorderStroke(1.dp, Color(0xFF42A5F5).copy(alpha = 0.38f)),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 4.dp, bottom = 2.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(4.dp)
+                                                                .height(18.dp)
+                                                                .background(Color(0xFF42A5F5), RoundedCornerShape(2.dp))
+                                                        )
+                                                        Spacer(modifier = Modifier.width(10.dp))
+                                                        Icon(
+                                                            imageVector = Icons.Default.LiveTv,
+                                                            contentDescription = null,
+                                                            tint = Color(0xFF42A5F5),
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            text = stringResource(R.string.fav_section_live),
+                                                            color = Color.White,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            fontSize = 15.sp
+                                                        )
+                                                        Spacer(modifier = Modifier.width(10.dp))
+                                                        Surface(
+                                                            color = Color(0xFF42A5F5).copy(alpha = 0.2f),
+                                                            shape = RoundedCornerShape(12.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = stringResource(R.string.fav_count_live, favLive.size),
+                                                                color = Color(0xFF90CAF9),
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 11.sp,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                    if (selectedFavoriteFilter == 0 && (favMovies.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
+                                                        Text(
+                                                            text = stringResource(R.string.filter_all),
+                                                            color = Color(0xFF42A5F5),
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.clickable { selectedFavoriteFilter = 1 }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        items(favLive, key = { "fav_live_" + it.url.ifBlank { it.title } }) { item ->
+                                            MovieCard(
+                                                item = item,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                badgeText = item.group?.takeIf { it.isNotBlank() } ?: liveBadgeLabel,
+                                                onClick = {
+                                                    if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                                        itemToUnlock = item
+                                                    } else {
+                                                        playWithPlaylist(item, favLive)
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+
+                                    // 2. FİLMLER BÖLÜMÜ
+                                    if (showMoviesSection) {
+                                        item(key = "fav_header_movies", span = { GridItemSpan(maxLineSpan) }) {
+                                            Surface(
+                                                color = Color(0xFF161B24),
+                                                shape = RoundedCornerShape(10.dp),
+                                                border = BorderStroke(1.dp, Color(0xFFE50914).copy(alpha = 0.38f)),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = if (showLiveSection) 12.dp else 4.dp, bottom = 2.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(4.dp)
+                                                                .height(18.dp)
+                                                                .background(Color(0xFFE50914), RoundedCornerShape(2.dp))
+                                                        )
+                                                        Spacer(modifier = Modifier.width(10.dp))
+                                                        Icon(
+                                                            imageVector = Icons.Default.Movie,
+                                                            contentDescription = null,
+                                                            tint = Color(0xFFE50914),
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            text = stringResource(R.string.fav_section_movies),
+                                                            color = Color.White,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            fontSize = 15.sp
+                                                        )
+                                                        Spacer(modifier = Modifier.width(10.dp))
+                                                        Surface(
+                                                            color = Color(0xFFE50914).copy(alpha = 0.2f),
+                                                            shape = RoundedCornerShape(12.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = stringResource(R.string.fav_count_movies, favMovies.size),
+                                                                color = Color(0xFFFF6B6B),
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 11.sp,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                    if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
+                                                        Text(
+                                                            text = stringResource(R.string.filter_all),
+                                                            color = Color(0xFFE50914),
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.clickable { selectedFavoriteFilter = 2 }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        items(favMovies, key = { "fav_movie_" + it.url.ifBlank { it.title } }) { item ->
+                                            MovieCard(
+                                                item = item,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                badgeText = item.group?.takeIf { it.isNotBlank() } ?: movieBadgeLabel,
+                                                onClick = {
+                                                    if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                                        itemToUnlock = item
+                                                        playlistForUnlock = favMovies
+                                                    } else {
+                                                        selectedMoviePlaylist = favMovies
+                                                        selectedMovie = item
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+
+                                    // 3. DİZİLER BÖLÜMÜ
+                                    if (showSeriesSection) {
+                                        item(key = "fav_header_series", span = { GridItemSpan(maxLineSpan) }) {
+                                            Surface(
+                                                color = Color(0xFF161B24),
+                                                shape = RoundedCornerShape(10.dp),
+                                                border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.38f)),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = if (showLiveSection || showMoviesSection) 12.dp else 4.dp, bottom = 2.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(4.dp)
+                                                                .height(18.dp)
+                                                                .background(Color(0xFFFFB300), RoundedCornerShape(2.dp))
+                                                        )
+                                                        Spacer(modifier = Modifier.width(10.dp))
+                                                        Icon(
+                                                            imageVector = Icons.Default.Tv,
+                                                            contentDescription = null,
+                                                            tint = Color(0xFFFFB300),
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            text = stringResource(R.string.fav_section_series),
+                                                            color = Color.White,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            fontSize = 15.sp
+                                                        )
+                                                        Spacer(modifier = Modifier.width(10.dp))
+                                                        Surface(
+                                                            color = Color(0xFFFFB300).copy(alpha = 0.2f),
+                                                            shape = RoundedCornerShape(12.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = stringResource(R.string.fav_count_series, favSeriesGroups.size),
+                                                                color = Color(0xFFFFCA28),
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 11.sp,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                    if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favMovies.isNotEmpty())) {
+                                                        Text(
+                                                            text = stringResource(R.string.filter_all),
+                                                            color = Color(0xFFFFB300),
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.clickable { selectedFavoriteFilter = 3 }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        items(favSeriesGroups, key = { "fav_series_" + it.key }) { (sName, favEpisodes) ->
+                                            val primaryFavItem = favEpisodes.first()
+                                            val episodes = allSeriesMap[sName]?.takeIf { it.isNotEmpty() } ?: favEpisodes
+                                            val fallbackLogo = episodes.firstOrNull { !it.logo.isNullOrEmpty() }?.logo
+                                            val cardItem = if (primaryFavItem.logo.isNullOrEmpty() && !fallbackLogo.isNullOrEmpty()) {
+                                                primaryFavItem.copy(logo = fallbackLogo)
+                                            } else {
+                                                primaryFavItem
+                                            }
+                                            SeriesCard(
+                                                seriesName = sName,
+                                                item = cardItem,
+                                                episodeCount = episodes.size,
+                                                episodes = episodes,
+                                                onPlayEpisode = { ep ->
+                                                    if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
+                                                        playlistForUnlock = episodes
+                                                        itemToUnlock = ep
+                                                    } else {
+                                                        playWithPlaylist(ep, episodes)
+                                                    }
+                                                },
+                                                onClick = {
+                                                    if (com.example.model.ParentalControlManager.isItemLocked(cardItem)) {
+                                                        seriesToUnlock = episodes
+                                                    } else {
+                                                        selectedSeries = episodes
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
+
+        // Category Drawer Panel Overlay
+        androidx.compose.animation.AnimatedVisibility(
+                    visible = showCategoryDrawer,
+                    enter = fadeIn() + slideInHorizontally(initialOffsetX = { -it }),
+                    exit = fadeOut() + slideOutHorizontally(targetOffsetX = { -it }),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    val pinCodeVal by com.example.model.ParentalControlManager.pinCode.collectAsState()
+                    val hasPin = pinCodeVal != null
+                    val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
+                    val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
+                    val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
+                    var groupToUnlock by remember { mutableStateOf<String?>(null) }
+
+                    if (groupToUnlock != null) {
+                        com.example.ui.components.PinUnlockDialog(
+                            title = groupToUnlock,
+                            subtitle = "Kategoriye erişmek için PIN girin",
+                            onUnlock = {
+                                val grp = groupToUnlock
+                                groupToUnlock = null
+                                if (grp != null) {
+                                    selectedGroup = grp
+                                    showCategoryDrawer = false
+                                }
+                            },
+                            onDismiss = { groupToUnlock = null }
+                        )
+                    }
+
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .clickable { showCategoryDrawer = false }
+                        )
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .padding(top = 15.dp, bottom = 15.dp)
+                                .fillMaxWidth(0.82f)
+                                .widthIn(min = 280.dp, max = 360.dp)
+                                .clickable(enabled = false) {},
+                            color = Color(0xFF141414),
+                            shape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                            shadowElevation = 16.dp
+                        ) {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.List,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(
+                                            text = stringResource(R.string.categories).uppercase(),
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 18.sp
+                                        )
+                                    }
+                                    IconButton(onClick = { showCategoryDrawer = false }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = stringResource(R.string.close_desc),
+                                            tint = Color.Gray
+                                        )
+                                    }
+                                }
+
+                                HorizontalDivider(color = Color(0xFF262626), thickness = 1.dp)
+
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(vertical = 8.dp)
+                                ) {
+                                    if (selectedTabIndex == 4) {
+                                        item {
+                                            val isAllSelected = selectedGroup == null
+                                        var isAllFocused by remember { mutableStateOf(false) }
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                                                .onFocusChanged { isAllFocused = it.isFocused }
+                                                .border(
+                                                    width = if (isAllFocused) 3.dp else if (isAllSelected) 1.5.dp else 0.dp,
+                                                    color = if (isAllFocused || isAllSelected) RedPrimary else Color.Transparent,
+                                                    shape = RoundedCornerShape(8.dp)
+                                                )
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(
+                                                    if (isAllFocused) RedPrimary.copy(alpha = 0.30f)
+                                                    else if (isAllSelected) RedPrimary.copy(alpha = 0.15f)
+                                                    else Color.Transparent
+                                                )
+                                                .clickable {
+                                                    selectedGroup = null
+                                                    showCategoryDrawer = false
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.filter_all).uppercase(),
+                                                color = if (isAllFocused) Color.White else if (isAllSelected) RedPrimary else Color.White,
+                                                fontWeight = if (isAllSelected || isAllFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                fontSize = 15.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f).padding(end = 8.dp)
+                                            )
+                                            Text(
+                                                text = "$totalTypeCount",
+                                                color = if (isAllFocused) Color.White else if (isAllSelected) RedPrimary else Color(0xFFCCCCCC),
+                                                fontWeight = if (isAllSelected || isAllFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                fontSize = 14.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                    items(displayGroups.size) { index ->
+                                        val group = displayGroups[index]
+                                        val isSelected = selectedGroup == group
+                                        var isGroupFocused by remember { mutableStateOf(false) }
+                                        val count = groupCounts[group] ?: 0
+
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                                                .onFocusChanged { isGroupFocused = it.isFocused }
+                                                .border(
+                                                    width = if (isGroupFocused) 3.dp else if (isSelected) 1.5.dp else 0.dp,
+                                                    color = if (isGroupFocused || isSelected) RedPrimary else Color.Transparent,
+                                                    shape = RoundedCornerShape(8.dp)
+                                                )
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(
+                                                    if (isGroupFocused) RedPrimary.copy(alpha = 0.30f)
+                                                    else if (isSelected) RedPrimary.copy(alpha = 0.15f)
+                                                    else Color.Transparent
+                                                )
+                                                .clickable {
+                                                    val isGroupLocked = com.example.model.ParentalControlManager.isGroupLocked(group)
+                                                    if (isGroupLocked) {
+                                                        sidePanelGroupToUnlock = group
+                                                        showCategoryDrawer = false
+                                                    } else {
+                                                        selectedGroup = group
+                                                        showCategoryDrawer = false
+                                                    }
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = group.uppercase(),
+                                                color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color.White,
+                                                fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f).padding(end = 8.dp)
+                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(
+                                                    text = "$count",
+                                                    color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color(0xFFCCCCCC),
+                                                    fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                    fontSize = 13.sp,
+                                                    modifier = Modifier.padding(end = 8.dp)
+                                                )
+                                                val isGroupLocked = com.example.model.ParentalControlManager.isGroupLocked(group)
+
+                                                IconButton(
+                                                    onClick = {
+                                                        if (isGroupLocked) {
+                                                            Toast.makeText(context, "Kategori kilidini kaldırmak için Ebeveyn Kontrolü menüsünü kullanın.", Toast.LENGTH_LONG).show()
+                                                        } else {
+                                                            com.example.model.ParentalControlManager.toggleGroupLock(group)
+                                                            Toast.makeText(context, context.getString(R.string.parental_channel_locked), Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(
+                                                        if (isGroupLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                                        contentDescription = null,
+                                                        tint = if (isGroupLocked) Color(0xFFEF5350) else Color.Gray,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+    // Movie Detail — Tam Ekran
+    val currentMovie = selectedMovie
+    if (currentMovie != null) {
+        MovieDetailDialog(
+            movie = currentMovie,
+            currentLang = currentLang,
+            onDismiss = { selectedMovie = null },
+            onPlayMovie = { movieToPlay ->
+                selectedMovie = null
+                if (com.example.model.ParentalControlManager.isItemLocked(movieToPlay)) {
+                    itemToUnlock = movieToPlay
+                    playlistForUnlock = selectedMoviePlaylist.ifEmpty { listOf(movieToPlay) }
+                } else {
+                    playWithPlaylist(movieToPlay, selectedMoviePlaylist.ifEmpty { listOf(movieToPlay) })
+                }
+            }
+        )
+    }
+
+    // Series Detail — Tam Ekran
+    val currentSeries = selectedSeries
+    if (currentSeries != null) {
+        val seriesItems = currentSeries
+        val seriesName = seriesItems.firstOrNull()?.seriesName ?: seriesItems.firstOrNull()?.title ?: ""
+        val favoriteKey = seriesItems.firstOrNull()?.url ?: ""
+        val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
+        val isFavorite = favoriteUrls.contains(favoriteKey)
+
+        var backdropUrl by remember(seriesName) { mutableStateOf<String?>(null) }
+        var trailerKey by remember(seriesName) { mutableStateOf<String?>(null) }
+        var tmdbDetail by remember(seriesName) { mutableStateOf<TmdbFullDetail?>(null) }
+        var isOverviewExpanded by remember(seriesName) { mutableStateOf(false) }
+        var showInfoDialog by remember(seriesName) { mutableStateOf(false) }
+
+        LaunchedEffect(seriesName) {
+            val (bg, trailer) = fetchTmdbSeriesBackdrop(seriesName)
+            backdropUrl = bg
+            trailerKey = trailer
+            val detail = fetchTmdbFullDetail(query = seriesName, isSeries = true)
+            tmdbDetail = detail
+            if (backdropUrl == null && detail?.backdropUrl != null) {
+                backdropUrl = detail.backdropUrl
+            }
+        }
+
+        val configuration = LocalConfiguration.current
+        val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val context = LocalContext.current
+        val coroutineScope = rememberCoroutineScope()
+
+        val ratingText = tmdbDetail?.rating?.takeIf { it > 0.0 }?.let {
+            String.format(Locale.US, "%.1f", it)
+        }
+        val releaseYearText = tmdbDetail?.releaseDate?.take(4)?.takeIf { it.isNotBlank() }
+        val overviewText = tmdbDetail?.overview?.takeIf { it.isNotBlank() }
+        val creatorText = tmdbDetail?.directors?.firstOrNull()?.takeIf { it.isNotBlank() }
+        val castList = tmdbDetail?.cast ?: emptyList()
+
+        val onPlaySeriesAction = {
+            val resumeItem = com.example.model.PlayerRepository.findResumeItem(seriesItems)
+                ?: seriesItems.minByOrNull { (it.season ?: 1) * 1000 + (it.episode ?: 0) }
+                ?: seriesItems.firstOrNull()
+            if (resumeItem != null) {
+                if (com.example.model.ParentalControlManager.isItemLocked(resumeItem)) {
+                    selectedSeries = null
+                    playlistForUnlock = seriesItems
+                    itemToUnlock = resumeItem
+                } else {
+                    com.example.model.PlayerRepository.lastSelectedSeries = seriesItems
+                    playWithPlaylist(resumeItem, seriesItems)
+                }
+            }
+        }
+
+        if (showInfoDialog) {
+            ContentInfoDialog(
+                title = seriesName,
+                posterUrl = seriesItems.firstOrNull()?.logo,
+                isSeries = true,
+                onDismiss = { showInfoDialog = false },
+                seriesEpisodes = seriesItems,
+                onPlay = { ep ->
+                    showInfoDialog = false
+                    onPlaySeriesAction()
+                }
+            )
+        }
+
+        Dialog(
+            onDismissRequest = {
+                selectedSeries = null
+                com.example.model.PlayerRepository.lastSelectedSeries = null
+            },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            BackHandler {
+                selectedSeries = null
+                com.example.model.PlayerRepository.lastSelectedSeries = null
+            }
+            com.example.util.KeepSystemBarsHidden()
+
+            com.example.ui.ProvideAppLocale(currentLang) {
+                if (!isLandscape) {
+                    // DİKEY MOD (PORTRAIT)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF0B0D10))
+                    ) {
+                        // Arka plan görseli
+                        if (backdropUrl != null) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(backdropUrl)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                contentScale = ContentScale.Crop
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                                    .background(
+                                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                Color(0xFF0B0D10).copy(alpha = 0.75f),
+                                                Color(0xFF0B0D10)
+                                            ),
+                                            startY = 50f
+                                        )
+                                    )
+                            )
+                        }
+
+                        // Üst Bar: Bilgi ("i") ve Kapat ("X") butonları
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .statusBarsPadding()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            IconButton(
+                                onClick = { showInfoDialog = true },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.Info,
+                                    contentDescription = stringResource(R.string.info_button_desc),
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    selectedSeries = null
+                                    com.example.model.PlayerRepository.lastSelectedSeries = null
+                                },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = stringResource(R.string.close_btn),
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .statusBarsPadding()
+                        ) {
+                            Spacer(modifier = Modifier.height(if (backdropUrl != null) 90.dp else 20.dp))
+
+                            // Dizi Başlığı
+                            Text(
+                                text = seriesName,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+
+                            // Rozetler: Puan, Çıkış Yılı, Yaratıcı
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (!ratingText.isNullOrBlank()) {
+                                    Surface(
+                                        color = Color(0xFFF5C518),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Star,
+                                                contentDescription = null,
+                                                tint = Color.Black,
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = ratingText,
+                                                color = Color.Black,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (!releaseYearText.isNullOrBlank()) {
+                                    Surface(
+                                        color = Color(0xFF222834),
+                                        shape = RoundedCornerShape(4.dp),
+                                        border = BorderStroke(0.5.dp, Color(0xFF384358))
+                                    ) {
+                                        Text(
+                                            text = releaseYearText,
+                                            color = Color(0xFFE2E8F0),
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+
+                                if (!creatorText.isNullOrBlank()) {
+                                    Text(
+                                        text = stringResource(R.string.info_creator, creatorText),
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // Aksiyon Butonları
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Oynat butonu
+                                Button(
+                                    onClick = onPlaySeriesAction,
+                                    colors = ButtonDefaults.buttonColors(containerColor = RedPrimary),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = stringResource(R.string.play),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+
+                                // Fragman butonu
+                                if (!trailerKey.isNullOrBlank()) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=$trailerKey"))
+                                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                context.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                e.printStackTrace()
+                                            }
+                                        },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Icon(Icons.Default.Movie, contentDescription = null, tint = Color(0xFFFF3344), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = stringResource(R.string.info_watch_trailer),
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+
+                                // Favori butonu
+                                OutlinedButton(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            com.example.model.FavoritesManager.toggleFavorite(favoriteKey)
+                                        }
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = if (isFavorite) RedPrimary else Color.White
+                                    ),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isFavorite) RedPrimary else Color.White.copy(alpha = 0.5f)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = null,
+                                        tint = if (isFavorite) RedPrimary else Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isFavorite) stringResource(R.string.favorited_btn) else stringResource(R.string.favorite_btn),
+                                        color = if (isFavorite) RedPrimary else Color.White,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+
+                                // Bilgi butonu ("i")
+                                OutlinedButton(
+                                    onClick = { showInfoDialog = true },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF64B5F6), modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = stringResource(R.string.info_button_desc),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+
+                            // Kısa Açıklama (TMDB Overview)
+                            if (!overviewText.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = overviewText,
+                                    color = Color(0xFFCBD5E1),
+                                    fontSize = 11.5.sp,
+                                    lineHeight = 15.sp,
+                                    maxLines = if (isOverviewExpanded) 6 else 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .padding(horizontal = 16.dp)
+                                        .clickable { isOverviewExpanded = !isOverviewExpanded }
+                                )
+                            }
+
+                            // Oyuncular (Cast with Photos)
+                            if (castList.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = stringResource(R.string.info_cast_section_title),
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 1.dp)
+                                )
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(castList.take(12)) { member ->
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.width(52.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(42.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF1E232E)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (!member.photoUrl.isNullOrBlank()) {
+                                                    AsyncImage(
+                                                        model = ImageRequest.Builder(context)
+                                                            .data(member.photoUrl)
+                                                            .crossfade(true)
+                                                            .build(),
+                                                        contentDescription = member.name,
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        contentScale = ContentScale.Crop
+                                                    )
+                                                } else {
+                                                    Icon(
+                                                        Icons.Default.Person,
+                                                        contentDescription = null,
+                                                        tint = Color.Gray,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = member.name,
+                                                color = Color.White,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                textAlign = TextAlign.Center
+                                            )
+                                            if (member.character.isNotBlank()) {
+                                                Text(
+                                                    text = member.character,
+                                                    color = Color.Gray,
+                                                    fontSize = 8.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    textAlign = TextAlign.Center
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // Sezonlar ve Bölümler listesi (iç mantık aynen korunuyor)
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                SeriesDetailSheet(
+                                    items = seriesItems,
+                                    onPlayStream = { item ->
+                                        if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                            selectedSeries = null
+                                            playlistForUnlock = seriesItems
+                                            itemToUnlock = item
+                                        } else {
+                                            com.example.model.PlayerRepository.lastSelectedSeries = seriesItems
+                                            playWithPlaylist(item, seriesItems)
+                                        }
+                                    },
+                                    onClose = {
+                                        selectedSeries = null
+                                        com.example.model.PlayerRepository.lastSelectedSeries = null
+                                    },
+                                    showHeader = false
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // YATAY MOD (LANDSCAPE) — 2 Kolonlu mükemmel uyumlu düzen
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF0B0D10))
+                    ) {
+                        // Sol Kolon: Arka Plan Görseli, Dizi Adı, Rozetler, Butonlar, Açıklama, Oyuncular
+                        Box(
+                            modifier = Modifier
+                                .width(380.dp)
+                                .fillMaxHeight()
+                        ) {
+                            if (backdropUrl != null) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(backdropUrl)
+                                        .crossfade(true)
+                                        .build(),
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            androidx.compose.ui.graphics.Brush.verticalGradient(
+                                                colors = listOf(
+                                                    Color.Black.copy(alpha = 0.3f),
+                                                    Color(0xFF0B0D10).copy(alpha = 0.88f),
+                                                    Color(0xFF0B0D10)
+                                                )
+                                            )
+                                        )
+                                )
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize().background(Color(0xFF14171C)))
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.Bottom
+                            ) {
+                                Text(
+                                    text = seriesName,
+                                    fontSize = 19.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+
+                                // Rozetler: Puan, Yıl, Yaratıcı
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (!ratingText.isNullOrBlank()) {
+                                        Surface(
+                                            color = Color(0xFFF5C518),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Star,
+                                                    contentDescription = null,
+                                                    tint = Color.Black,
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text(
+                                                    text = ratingText,
+                                                    color = Color.Black,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.ExtraBold
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (!releaseYearText.isNullOrBlank()) {
+                                        Surface(
+                                            color = Color(0xFF222834),
+                                            shape = RoundedCornerShape(4.dp),
+                                            border = BorderStroke(0.5.dp, Color(0xFF384358))
+                                        ) {
+                                            Text(
+                                                text = releaseYearText,
+                                                color = Color(0xFFE2E8F0),
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+
+                                    if (!creatorText.isNullOrBlank()) {
+                                        Text(
+                                            text = stringResource(R.string.info_creator, creatorText),
+                                            color = Color(0xFF94A3B8),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                // Butonlar
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Button(
+                                        onClick = onPlaySeriesAction,
+                                        colors = ButtonDefaults.buttonColors(containerColor = RedPrimary),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                    ) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = stringResource(R.string.play),
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+
+                                    if (!trailerKey.isNullOrBlank()) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                try {
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=$trailerKey"))
+                                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    e.printStackTrace()
+                                                }
+                                            },
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(Icons.Default.Movie, contentDescription = null, tint = Color(0xFFFF3344), modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = stringResource(R.string.info_watch_trailer),
+                                                color = Color.White,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                com.example.model.FavoritesManager.toggleFavorite(favoriteKey)
+                                            }
+                                        },
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            contentColor = if (isFavorite) RedPrimary else Color.White
+                                        ),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isFavorite) RedPrimary else Color.White.copy(alpha = 0.5f)
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = null,
+                                            tint = if (isFavorite) RedPrimary else Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (isFavorite) stringResource(R.string.favorited_btn) else stringResource(R.string.favorite_btn),
+                                            color = if (isFavorite) RedPrimary else Color.White,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { showInfoDialog = true },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF64B5F6), modifier = Modifier.size(14.dp))
+                                    }
+                                }
+
+                                // Kısa Açıklama
+                                if (!overviewText.isNullOrBlank()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = overviewText,
+                                        color = Color(0xFFCBD5E1),
+                                        fontSize = 11.sp,
+                                        lineHeight = 14.5.sp,
+                                        maxLines = 4,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.clickable { isOverviewExpanded = !isOverviewExpanded }
+                                    )
+                                }
+
+                                // Oyuncular (Cast)
+                                if (castList.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = stringResource(R.string.info_cast_section_title),
+                                        color = Color.White.copy(alpha = 0.9f),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        items(castList.take(12)) { member ->
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                modifier = Modifier.width(48.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(38.dp)
+                                                        .clip(CircleShape)
+                                                    .background(Color(0xFF1E232E)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (!member.photoUrl.isNullOrBlank()) {
+                                                        AsyncImage(
+                                                            model = ImageRequest.Builder(context)
+                                                                .data(member.photoUrl)
+                                                                .crossfade(true)
+                                                                .build(),
+                                                            contentDescription = member.name,
+                                                            modifier = Modifier.fillMaxSize(),
+                                                            contentScale = ContentScale.Crop
+                                                        )
+                                                    } else {
+                                                        Icon(
+                                                            Icons.Default.Person,
+                                                            contentDescription = null,
+                                                            tint = Color.Gray,
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = member.name,
+                                                    color = Color.White,
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    textAlign = TextAlign.Center
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sağ Kolon: Kapat & Bilgi Butonları + Sezon Sekmeleri & Bölüm Listesi
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(end = 12.dp, top = 8.dp, bottom = 8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = { showInfoDialog = true },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Info,
+                                        contentDescription = stringResource(R.string.info_button_desc),
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                IconButton(
+                                    onClick = {
+                                        selectedSeries = null
+                                        com.example.model.PlayerRepository.lastSelectedSeries = null
+                                    },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = stringResource(R.string.close_btn),
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                SeriesDetailSheet(
+                                    items = seriesItems,
+                                    onPlayStream = { item ->
+                                        if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                            selectedSeries = null
+                                            playlistForUnlock = seriesItems
+                                            itemToUnlock = item
+                                        } else {
+                                            com.example.model.PlayerRepository.lastSelectedSeries = seriesItems
+                                            playWithPlaylist(item, seriesItems)
+                                        }
+                                    },
+                                    onClose = {
+                                        selectedSeries = null
+                                        com.example.model.PlayerRepository.lastSelectedSeries = null
+                                    },
+                                    showHeader = false
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Settings Bottom Sheet
+    if (showSettingsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettingsSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = null
+        ) {
+            SettingsSheetContent(
+                onClose = { showSettingsSheet = false },
+                onOpenSupport = {
+                    showSettingsSheet = false
+                    showSupportSheet = true
+                }
+            )
+        }
+    }
+
+    // Profile Settings Bottom Sheet
+    if (showProfileSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showProfileSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = null
+        ) {
+            ProfileSettingsSheet(
+                onClose = { showProfileSheet = false },
+                onOpenSupport = {
+                    showProfileSheet = false
+                    showSupportSheet = true
+                },
+                onNavigateToAuth = {
+                    showProfileSheet = false
+                    onNavigateToAuth()
+                }
+            )
+        }
+    }
+
+    // Support Tickets Bottom Sheet
+    if (showSupportSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSupportSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = null
+        ) {
+            SupportTicketsSheet(onClose = { showSupportSheet = false })
+        }
+    }
+
+    // All Fixtures Bottom Sheet
+    if (showAllFixturesSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAllFixturesSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = null
+        ) {
+            com.example.util.KeepSystemBarsHidden()
+            var fixtureFilterLeague by remember { mutableStateOf("Tümü") }
+            val leagues = listOf("Tümü", "Trendyol Süper Lig", "UEFA Şampiyonlar Ligi", "UEFA Avrupa Ligi", "Canlı")
+            val filteredFixtures = remember(liveFixtures, fixtureFilterLeague, searchQuery) {
+                liveFixtures.filter { fixture ->
+                    val matchesLeague = when (fixtureFilterLeague) {
+                        "Tümü" -> true
+                        "Canlı" -> fixture.isLive
+                        else -> fixture.league.contains(fixtureFilterLeague, ignoreCase = true)
+                    }
+                    val matchesSearch = searchQuery.isBlank() ||
+                        fixture.homeTeam.contains(searchQuery, ignoreCase = true) ||
+                        fixture.awayTeam.contains(searchQuery, ignoreCase = true) ||
+                        fixture.league.contains(searchQuery, ignoreCase = true)
+                    matchesLeague && matchesSearch
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.SportsSoccer, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Günün Maçları & Fikstür",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
+                            color = Color.White
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isFixturesRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Güncelleniyor...", color = Color.Gray, fontSize = 11.sp)
+                        } else {
+                            OutlinedButton(
+                                onClick = { refreshFixtures(true) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(30.dp),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Fikstürü Güncelle", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Güncelle", fontSize = 11.sp, color = Color.White)
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        IconButton(onClick = { showAllFixturesSheet = false }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close_desc), tint = Color.Gray, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(leagues) { lg ->
+                        FilterChip(
+                            selected = fixtureFilterLeague == lg,
+                            onClick = { fixtureFilterLeague = lg },
+                            label = { Text(lg, fontSize = 11.sp, fontWeight = FontWeight.Medium) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = Color.White,
+                                containerColor = Color(0xFF1E2430),
+                                labelColor = Color.LightGray
+                            )
+                        )
+                    }
+                }
+
+                if (filteredFixtures.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.SportsSoccer, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(56.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Bu filtreye uygun maç fikstürü bulunamadı.", color = Color.Gray, fontSize = 14.sp)
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(filteredFixtures, key = { it.id }) { fixture ->
+                            MatchFixtureDetailedCard(
+                                fixture = fixture,
+                                onWatchClick = {
+                                    val matchedChannel = allItems.find { channel ->
+                                        channel.type == ItemType.LIVE && fixture.channelKeywords.any { kw -> channel.title.contains(kw, ignoreCase = true) }
+                                    }
+                                    if (matchedChannel != null) {
+                                        showAllFixturesSheet = false
+                                        if (com.example.model.ParentalControlManager.isItemLocked(matchedChannel)) {
+                                            itemToUnlock = matchedChannel
+                                        } else {
+                                            playWithPlaylist(matchedChannel, listOf(matchedChannel))
+                                        }
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            "${fixture.broadcastChannel} kanalı çalma listenizde bulunamadı.",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // TMDb Detail Dialog
+    val currentImdbItem = selectedImdbItem
+    if (currentImdbItem != null) {
+        val isNotified = notifiedTmdbIds.contains(currentImdbItem.id)
+        ImdbDetailDialog(
+            item = currentImdbItem,
+            isNotified = isNotified,
+            onNotifyToggle = {
+                notifiedTmdbIds = if (isNotified) {
+                    notifiedTmdbIds - currentImdbItem.id
+                } else {
+                    Toast.makeText(context, "'${currentImdbItem.title}' için bildirim planlandı", Toast.LENGTH_SHORT).show()
+                    notifiedTmdbIds + currentImdbItem.id
+                }
+            },
+            onDismiss = { selectedImdbItem = null }
+        )
+    }
+
+    // Pro Upgrade Restriction Dialog
+    if (showProUpgradeDialog) {
+        com.example.ui.components.ProUpgradeDialog(
+            onDismiss = { showProUpgradeDialog = false }
+        )
+    }
+
+    // Version Update Dialog
+    com.example.ui.components.UpdateDialog()
+}
+}
+
+@Composable
+fun DashboardCategorySidePanel(
+    displayGroups: List<String>,
+    selectedGroup: String?,
+    onSelectGroup: (String?) -> Unit,
+    groupCounts: Map<String, Int>,
+    totalTypeCount: Int,
+    modifier: Modifier = Modifier,
+    onRequestUnlock: (String) -> Unit = {}
+) {
+    val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
+    val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
+    val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(selectedGroup) {
+        if (selectedGroup != null) {
+            val idx = displayGroups.indexOf(selectedGroup)
+            if (idx >= 0) {
+                listState.animateScrollToItem((idx + 1).coerceAtMost(displayGroups.size))
+            }
+        }
+    }
+
+    Surface(
+        modifier = modifier
+            .width(260.dp)
+            .fillMaxHeight(),
+        color = Color(0xFF10131A),
+        border = BorderStroke(width = 1.dp, color = Color(0xFF222834))
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.List,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.categories).uppercase(),
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                ) {
+                    Text(
+                        text = "${displayGroups.size}",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            HorizontalDivider(color = Color(0xFF222834), thickness = 1.dp)
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 6.dp)
+            ) {
+                // Kategoriler listesi (Buket sıralamasına göre ilk kategori varsayılan yüklenir)
+                items(displayGroups.size) { index ->
+                    val group = displayGroups[index]
+                    val isSelected = selectedGroup == group
+                    var isGroupFocused by remember { mutableStateOf(false) }
+                    val count = groupCounts[group] ?: 0
+                    val isLocked = com.example.model.ParentalControlManager.isGroupLocked(group)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                            .onFocusChanged { isGroupFocused = it.isFocused }
+                            .border(
+                                width = if (isGroupFocused) 3.dp else if (isSelected) 1.5.dp else 0.dp,
+                                color = if (isGroupFocused || isSelected) RedPrimary else Color.Transparent,
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (isGroupFocused) RedPrimary.copy(alpha = 0.30f)
+                                else if (isSelected) RedPrimary.copy(alpha = 0.15f)
+                                else Color.Transparent
+                            )
+                            .clickable {
+                                if (isLocked) {
+                                    onRequestUnlock(group)
+                                } else {
+                                    onSelectGroup(group)
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f).padding(end = 8.dp)
+                        ) {
+                            if (isLocked) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFB300),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+                            Text(
+                                text = group.uppercase(),
+                                color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color.White,
+                                fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text(
+                            text = "$count",
+                            color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color(0xFFCCCCCC),
+                            fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
