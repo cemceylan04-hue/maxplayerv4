@@ -49,9 +49,10 @@ fun AdSliderBanner(
     onClick: ((AdBannerItem) -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val isBannerEnabled by AdBannerManager.isBannerEnabled.collectAsState()
     val ads by AdBannerManager.adItems.collectAsState()
 
-    if (ads.isEmpty()) return
+    if (!isBannerEnabled || ads.isEmpty()) return
 
     var currentIndex by remember { mutableIntStateOf(0) }
     var isFocused by remember { mutableStateOf(false) }

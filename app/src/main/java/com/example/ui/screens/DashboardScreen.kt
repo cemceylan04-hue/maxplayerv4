@@ -18,10 +18,15 @@ import coil.request.ImageRequest
 import androidx.compose.foundation.focusable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.input.key.*
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -135,6 +140,9 @@ fun DashboardScreen(
     var showCategoryDrawer by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+    val categoryFirstItemFocusRequester = remember { FocusRequester() }
+    val currentTabFocusRequester = remember { FocusRequester() }
+    val categoryListState = rememberLazyListState()
     LaunchedEffect(Unit) {
         if (PlaylistRepository.playlist.value.isEmpty() && !PlaylistRepository.isLoading.value) {
             val targetUrl = PlaylistRepository.resolveLastOrFirstPlaylistUrl(context)
@@ -362,6 +370,7 @@ fun DashboardScreen(
     val knownGroupsMap by PlaylistRepository.knownGroups.collectAsState()
     val categoryLoadingStates by PlaylistRepository.categoryLoadingStates.collectAsState()
     val typeLoadingStates by PlaylistRepository.typeLoadingStates.collectAsState()
+    val isAdBannerEnabled by com.example.model.AdBannerManager.isBannerEnabled.collectAsState()
 
     val displayGroups = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, knownGroupsMap) {
         when {
@@ -857,7 +866,12 @@ fun DashboardScreen(
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .focusProperties {
+                                if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+                                    down = categoryFirstItemFocusRequester
+                                }
+                            },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         tabs.forEachIndexed { index, title ->
@@ -867,7 +881,25 @@ fun DashboardScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
+                                    .then(if (isSelected) Modifier.focusRequester(currentTabFocusRequester) else Modifier)
                                     .onFocusChanged { isItemFocused = it.isFocused }
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
+                                            if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+                                                scope.launch {
+                                                    categoryListState.scrollToItem(0)
+                                                    try {
+                                                        categoryFirstItemFocusRequester.requestFocus()
+                                                    } catch (_: Exception) {}
+                                                }
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .border(
                                         width = if (isItemFocused) 3.dp else if (isSelected) 1.5.dp else 0.dp,
                                         color = if (isItemFocused || isSelected) RedPrimary else Color.Transparent,
@@ -1205,6 +1237,9 @@ fun DashboardScreen(
                         },
                         groupCounts = groupCounts,
                         totalTypeCount = totalTypeCount,
+                        categoryListState = categoryListState,
+                        firstItemFocusRequester = categoryFirstItemFocusRequester,
+                        currentTabFocusRequester = currentTabFocusRequester,
                         modifier = Modifier
                             .width(260.dp)
                             .fillMaxHeight(),
@@ -1218,6 +1253,11 @@ fun DashboardScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .focusProperties {
+                            if (isLandscape && selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+                                left = categoryFirstItemFocusRequester
+                            }
+                        }
                 ) {
                     when (selectedTabIndex) {
                     0 -> {
@@ -1246,14 +1286,16 @@ fun DashboardScreen(
                             contentPadding = PaddingValues(bottom = 32.dp)
                         ) {
                             // Reklam / Duyuru Slider Banner (Web arayüzü reklam yönetimi entegrasyonu)
-                            item {
-                                com.example.ui.components.AdSliderBanner(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                                    height = if (isLandscape) 112.dp else 100.dp
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
+                            if (isAdBannerEnabled) {
+                                item {
+                                    com.example.ui.components.AdSliderBanner(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                                        height = if (isLandscape) 112.dp else 100.dp
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                }
                             }
 
                             // Hero Banner
@@ -1709,12 +1751,14 @@ fun DashboardScreen(
                         // TAB 1: LIVE CHANNELS (CANLI)
                         Column(modifier = Modifier.fillMaxSize()) {
                             // Reklam / Duyuru Slider Banner
-                            com.example.ui.components.AdSliderBanner(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                                height = if (isLandscape) 100.dp else 92.dp
-                            )
+                            if (isAdBannerEnabled) {
+                                com.example.ui.components.AdSliderBanner(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                    height = if (isLandscape) 100.dp else 92.dp
+                                )
+                            }
 
                             if (currentTabItems.isEmpty()) {
                                 val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
@@ -1763,7 +1807,24 @@ fun DashboardScreen(
                                     contentPadding = PaddingValues(14.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .focusProperties {
+                                            if (isLandscape && displayGroups.isNotEmpty()) {
+                                                left = categoryFirstItemFocusRequester
+                                            }
+                                        }
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                                scope.launch {
+                                                    if (categoryListState.firstVisibleItemIndex > 0) {
+                                                        categoryListState.scrollToItem(0)
+                                                    }
+                                                }
+                                            }
+                                            false
+                                        }
                                 ) {
                                     items(currentTabItems) { channel ->
                                         ChannelCard(item = channel, onClick = {
@@ -1783,12 +1844,14 @@ fun DashboardScreen(
                         // TAB 2: MOVIES (FLİM)
                         Column(modifier = Modifier.fillMaxSize()) {
                             // Reklam / Duyuru Slider Banner
-                            com.example.ui.components.AdSliderBanner(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                                height = if (isLandscape) 100.dp else 92.dp
-                            )
+                            if (isAdBannerEnabled) {
+                                com.example.ui.components.AdSliderBanner(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                    height = if (isLandscape) 100.dp else 92.dp
+                                )
+                            }
 
                             if (currentTabItems.isEmpty()) {
                                 val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
@@ -1838,7 +1901,24 @@ fun DashboardScreen(
                                     contentPadding = PaddingValues(16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .focusProperties {
+                                            if (isLandscape && displayGroups.isNotEmpty()) {
+                                                left = categoryFirstItemFocusRequester
+                                            }
+                                        }
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                                scope.launch {
+                                                    if (categoryListState.firstVisibleItemIndex > 0) {
+                                                        categoryListState.scrollToItem(0)
+                                                    }
+                                                }
+                                            }
+                                            false
+                                        }
                                 ) {
                                     items(currentTabItems) { movie ->
                                         MovieCard(item = movie, onClick = {
@@ -1944,12 +2024,14 @@ fun DashboardScreen(
                         // TAB 3: SERIES (DİZİ)
                         Column(modifier = Modifier.fillMaxSize()) {
                             // Reklam / Duyuru Slider Banner
-                            com.example.ui.components.AdSliderBanner(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                                height = if (isLandscape) 100.dp else 92.dp
-                            )
+                            if (isAdBannerEnabled) {
+                                com.example.ui.components.AdSliderBanner(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                                    height = if (isLandscape) 100.dp else 92.dp
+                                )
+                            }
 
                             if (currentTabItems.isEmpty()) {
                                 val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
@@ -2000,7 +2082,24 @@ fun DashboardScreen(
                                     contentPadding = PaddingValues(16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .focusProperties {
+                                            if (isLandscape && displayGroups.isNotEmpty()) {
+                                                left = categoryFirstItemFocusRequester
+                                            }
+                                        }
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
+                                                scope.launch {
+                                                    if (categoryListState.firstVisibleItemIndex > 0) {
+                                                        categoryListState.scrollToItem(0)
+                                                    }
+                                                }
+                                            }
+                                            false
+                                        }
                                 ) {
                                     if (recentSeries.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
                                         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -3729,18 +3828,25 @@ fun DashboardCategorySidePanel(
     groupCounts: Map<String, Int>,
     totalTypeCount: Int,
     modifier: Modifier = Modifier,
+    categoryListState: LazyListState = rememberLazyListState(),
+    firstItemFocusRequester: FocusRequester = remember { FocusRequester() },
+    currentTabFocusRequester: FocusRequester? = null,
     onRequestUnlock: (String) -> Unit = {}
 ) {
     val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
     val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
     val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
-    val listState = rememberLazyListState()
+    val listState = categoryListState
+    val scope = rememberCoroutineScope()
+    var hadFocus by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedGroup) {
         if (selectedGroup != null) {
             val idx = displayGroups.indexOf(selectedGroup)
-            if (idx >= 0) {
-                listState.animateScrollToItem((idx + 1).coerceAtMost(displayGroups.size))
+            if (idx > 0) {
+                listState.animateScrollToItem(idx)
+            } else if (idx == 0) {
+                listState.scrollToItem(0)
             }
         }
     }
@@ -3748,7 +3854,20 @@ fun DashboardCategorySidePanel(
     Surface(
         modifier = modifier
             .width(260.dp)
-            .fillMaxHeight(),
+            .fillMaxHeight()
+            .onFocusChanged { focusState ->
+                if (focusState.hasFocus && !hadFocus) {
+                    hadFocus = true
+                    scope.launch {
+                        listState.scrollToItem(0)
+                        try {
+                            firstItemFocusRequester.requestFocus()
+                        } catch (_: Exception) {}
+                    }
+                } else if (!focusState.hasFocus) {
+                    hadFocus = false
+                }
+            },
         color = Color(0xFF10131A),
         border = BorderStroke(width = 1.dp, color = Color(0xFF222834))
     ) {
@@ -3809,7 +3928,19 @@ fun DashboardCategorySidePanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 2.dp)
+                            .then(if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
                             .onFocusChanged { isGroupFocused = it.isFocused }
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionUp && index == 0) {
+                                    if (currentTabFocusRequester != null) {
+                                        try {
+                                            currentTabFocusRequester.requestFocus()
+                                            return@onPreviewKeyEvent true
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+                                false
+                            }
                             .border(
                                 width = if (isGroupFocused) 3.dp else if (isSelected) 1.5.dp else 0.dp,
                                 color = if (isGroupFocused || isSelected) RedPrimary else Color.Transparent,

@@ -60,6 +60,13 @@ object AdBannerManager {
         )
     )
 
+    private val _isBannerEnabled = MutableStateFlow<Boolean>(false)
+    val isBannerEnabled: StateFlow<Boolean> = _isBannerEnabled.asStateFlow()
+
+    fun setBannerEnabled(enabled: Boolean) {
+        _isBannerEnabled.value = enabled
+    }
+
     private val _adItems = MutableStateFlow<List<AdBannerItem>>(defaultAds)
     val adItems: StateFlow<List<AdBannerItem>> = _adItems.asStateFlow()
 

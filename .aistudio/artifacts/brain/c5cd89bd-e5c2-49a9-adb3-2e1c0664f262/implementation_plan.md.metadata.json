@@ -1,6 +1,6 @@
 {
-  "summary": "Google ile Giriş entegrasyonundaki SHA-1 uyumsuzluğunu ve CredentialManager istemci yapılandırmasını düzeltmeye yönelik uygulama planı. Plan; AI Studio debug APK'sının SHA-1 parmak izinin Google Cloud Console'a eklenmesi adımlarını, GoogleAuthManager içindeki hata teşhis ve Web Client ID fallback mekanizmasını ve telefonda sorunsuz oturum açmayı sağlayacak geliştirmeleri içerir.",
-  "updatedAt": "2026-10-15T20:56:20.573554598Z",
+  "summary": "Samsung Smart TV (Tizen OS) React Web App için 1:1 UI Renkleri, Intro/Splash Entegrasyonu ve Kumanda (Remote Control) Yönetim Planı",
+  "updatedAt": "2026-10-16T20:35:21.605158565Z",
   "requestFeedback": true,
   "userFacing": true
 }
