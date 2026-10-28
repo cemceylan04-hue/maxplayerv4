@@ -103,10 +103,14 @@ object PlaylistRepository {
             }
             val files = context.filesDir.listFiles()
             if (files != null) {
+                val now = System.currentTimeMillis()
                 for (f in files) {
                     val name = f.name
-                    if (name.startsWith("playlist_cache_") || name.startsWith("groups_cache_") || name.endsWith(".m3u.tmp") || name.startsWith("xtream_")) {
-                        if (keepHash == null || !name.contains(keepHash)) {
+                    if (name.endsWith(".m3u.tmp") || name.endsWith(".download")) {
+                        try { f.delete() } catch (_: Exception) {}
+                    } else if (name.startsWith("playlist_cache_") || name.startsWith("groups_cache_")) {
+                        // Keep cache files for up to 3 days to avoid hammering servers on playlist switch
+                        if (now - f.lastModified() > 3 * 86400_000L) {
                             try { f.delete() } catch (_: Exception) {}
                         }
                     }
@@ -114,10 +118,13 @@ object PlaylistRepository {
             }
             val cacheFiles = context.cacheDir.listFiles()
             if (cacheFiles != null) {
+                val now = System.currentTimeMillis()
                 for (f in cacheFiles) {
                     val name = f.name
-                    if (name.startsWith("xtream_") || name.endsWith(".download")) {
-                        if (keepHash == null || !name.contains(keepHash)) {
+                    if (name.endsWith(".download") || name.endsWith(".tmp")) {
+                        try { f.delete() } catch (_: Exception) {}
+                    } else if (name.startsWith("xtream_")) {
+                        if (now - f.lastModified() > 2 * 86400_000L) {
                             try { f.delete() } catch (_: Exception) {}
                         }
                     }
@@ -128,14 +135,23 @@ object PlaylistRepository {
 
     fun buildPlaylistUrl(hostUrl: String, username: String, password: String): String {
         val cleanHost = hostUrl.trim().trimEnd('/')
-        if (cleanHost.contains("/get.php") || cleanHost.contains("output=") || cleanHost.endsWith(".m3u") || cleanHost.endsWith(".m3u8")) {
-            return cleanHost
+        val u = username.trim()
+        val p = password.trim()
+
+        if (u.isNotEmpty() && p.isNotEmpty()) {
+            if (cleanHost.contains("username=", ignoreCase = true) || cleanHost.contains("user=", ignoreCase = true)) {
+                return cleanHost
+            }
+            val baseHost = cleanHost
+                .substringBefore("/get.php")
+                .substringBefore("/player_api.php")
+                .substringBefore("/xmltv.php")
+                .substringBefore('?')
+                .trimEnd('/')
+            return "$baseHost/get.php?username=$u&password=$p&type=m3u_plus&output=mpegts"
         }
-        return if (username.isEmpty() && password.isEmpty()) {
-            cleanHost
-        } else {
-            "$cleanHost/get.php?username=$username&password=$password&type=m3u_plus&output=mpegts"
-        }
+
+        return cleanHost
     }
 
     private fun getCacheFile(context: Context, url: String): File {

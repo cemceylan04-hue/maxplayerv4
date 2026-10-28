@@ -45,7 +45,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun AdSliderBanner(
     modifier: Modifier = Modifier,
-    height: Dp = 108.dp,
+    height: Dp = 115.dp,
     onClick: ((AdBannerItem) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -57,11 +57,11 @@ fun AdSliderBanner(
     var currentIndex by remember { mutableIntStateOf(0) }
     var isFocused by remember { mutableStateOf(false) }
 
-    // Auto slide every 4.5 seconds
+    // Auto slide every 5 seconds
     LaunchedEffect(ads.size) {
         if (ads.size > 1) {
             while (true) {
-                delay(4500L)
+                delay(5000L)
                 currentIndex = (currentIndex + 1) % ads.size
             }
         }
@@ -95,11 +95,17 @@ fun AdSliderBanner(
             animationSpec = tween(600),
             label = "ad_slider_crossfade"
         ) { ad ->
-            val primaryColor = Color(ad.primaryColor)
-            val secondaryColor = Color(ad.secondaryColor)
-
             Box(modifier = Modifier.fillMaxSize()) {
-                if (!ad.imageUrl.isNullOrBlank()) {
+                val hasImage = ad.imageResId != null || !ad.imageUrl.isNullOrBlank()
+
+                if (ad.imageResId != null) {
+                    Image(
+                        painter = painterResource(id = ad.imageResId),
+                        contentDescription = ad.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else if (!ad.imageUrl.isNullOrBlank()) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(ad.imageUrl)
@@ -109,22 +115,11 @@ fun AdSliderBanner(
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
-                    // Darkening gradient over image
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(
-                                        Color(0xFF0D111A).copy(alpha = 0.95f),
-                                        Color(0xFF0D111A).copy(alpha = 0.65f),
-                                        Color.Transparent
-                                    )
-                                )
-                            )
-                    )
                 } else {
-                    // Deep gradient background
+                    // Deep gradient background for text-only ads
+                    val primaryColor = Color(ad.primaryColor)
+                    val secondaryColor = Color(ad.secondaryColor)
+
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -139,7 +134,7 @@ fun AdSliderBanner(
                             )
                     )
 
-                    // Watermark app icon / graphic on the right
+                    // Watermark app icon on text fallback
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -158,126 +153,98 @@ fun AdSliderBanner(
                     }
                 }
 
-                // Foreground Content
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    // Left Text Column
-                    Column(
+                // If text-only fallback (no image), render title and subtitle overlay
+                if (!hasImage) {
+                    val primaryColor = Color(ad.primaryColor)
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.Center
+                            .fillMaxSize()
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Badge Pill
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = primaryColor.copy(alpha = 0.25f),
-                            border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.6f))
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                            verticalArrangement = Arrangement.Center
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = primaryColor.copy(alpha = 0.25f),
+                                border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.6f))
                             ) {
-                                Icon(
-                                    imageVector = if (ad.badge.contains("CANLI")) Icons.Default.PlayArrow else Icons.Default.Campaign,
-                                    contentDescription = null,
-                                    tint = primaryColor,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = ad.badge.uppercase(),
-                                    color = Color.White,
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.5.sp
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (ad.badge.contains("CANLI")) Icons.Default.PlayArrow else Icons.Default.Campaign,
+                                        contentDescription = null,
+                                        tint = primaryColor,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = ad.badge.uppercase(),
+                                        color = Color.White,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
-                        // Title
-                        Text(
-                            text = ad.title,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                            Text(
+                                text = ad.title,
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
 
-                        Spacer(modifier = Modifier.height(2.dp))
+                            Spacer(modifier = Modifier.height(2.dp))
 
-                        // Subtitle
-                        Text(
-                            text = ad.subtitle,
-                            color = Color(0xFFD0D7DE),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    // Right Side: 4K Ultra HD Badge + Action Arrow
-                    Column(
-                        horizontalAlignment = Alignment.End,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color.Black.copy(alpha = 0.45f),
-                            border = BorderStroke(1.dp, Color(0xFF3E485E))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Stars,
-                                    contentDescription = null,
-                                    tint = Color(0xFFFFB300),
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "4K PRO",
-                                    color = Color(0xFFFFB300),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp
-                                )
-                            }
+                            Text(
+                                text = ad.subtitle,
+                                color = Color(0xFFD0D7DE),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
 
                 // Slide Dots Indicator at bottom right
                 if (ads.size > 1) {
-                    Row(
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 16.dp, bottom = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(end = 12.dp, bottom = 8.dp)
                     ) {
-                        ads.forEachIndexed { idx, _ ->
-                            val isActive = idx == currentIndex
-                            Box(
-                                modifier = Modifier
-                                    .size(width = if (isActive) 16.dp else 6.dp, height = 5.dp)
-                                    .background(
-                                        color = if (isActive) Color.White else Color.White.copy(alpha = 0.35f),
-                                        shape = CircleShape
-                                    )
-                            )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ads.forEachIndexed { idx, _ ->
+                                val isActive = idx == currentIndex
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = if (isActive) 16.dp else 6.dp, height = 5.dp)
+                                        .background(
+                                            color = if (isActive) Color(0xFFE50914) else Color.White.copy(alpha = 0.45f),
+                                            shape = CircleShape
+                                        )
+                                )
+                            }
                         }
                     }
                 }

@@ -1,5 +1,6 @@
 package com.example.model
 
+import com.example.R
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -7,9 +8,10 @@ import kotlinx.coroutines.flow.asStateFlow
 data class AdBannerItem(
     val id: String,
     val title: String,
-    val subtitle: String,
-    val badge: String = "ÖNE ÇIKAN",
+    val subtitle: String = "",
+    val badge: String = "SPONSOR",
     val imageUrl: String? = null,
+    val imageResId: Int? = null,
     val actionUrl: String? = null,
     val primaryColor: Long = 0xFFE50914,
     val secondaryColor: Long = 0xFF0D1B2A
@@ -17,50 +19,49 @@ data class AdBannerItem(
 
 /**
  * Manages promotional and advertising slider banners shown across
- * Anasayfa, Canlı, Film, and Dizi tabs.
- * Can be dynamically updated from a web admin panel or remote JSON endpoint.
+ * Canlı, Film, and Dizi tabs.
+ * Contains bundled high-resolution scenic sponsor banners.
  */
 object AdBannerManager {
     private val defaultAds = listOf(
         AdBannerItem(
-            id = "ad_1_vip",
-            title = "MAXX PLAYER 4K ULTRA HD",
-            subtitle = "Yüksek Kaliteli Kesintisiz Yayın Deneyimi ve Hızlı Akış",
-            badge = "REKLAM & DUYURU",
-            imageUrl = null,
-            primaryColor = 0xFFE50914,
-            secondaryColor = 0xFF141926
+            id = "sponsor_banner_1",
+            title = "Sponsorluk Alanı",
+            subtitle = "Hiç bir şekilde IPTV satıcısı reklamı alınmaz",
+            badge = "SPONSORLUK",
+            imageResId = R.drawable.banner_ad_1
         ),
         AdBannerItem(
-            id = "ad_2_sports",
-            title = "CANLI SPOR & ŞAMPİYONLAR LİGİ",
-            subtitle = "Süper Lig, Premier Lig ve Tüm Avrupa Maçları Canlı Yayında",
-            badge = "CANLI MAÇLAR",
-            imageUrl = null,
-            primaryColor = 0xFF1E88E5,
-            secondaryColor = 0xFF0A192F
+            id = "sponsor_banner_2",
+            title = "Doğa & Kanyon",
+            subtitle = "Yüksek Kaliteli 4K Yayın Deneyimi",
+            badge = "ÖNE ÇIKAN",
+            imageResId = R.drawable.banner_ad_2
         ),
         AdBannerItem(
-            id = "ad_3_movies",
-            title = "EN YENİ VİZYON FİLMLERİ VE DİZİLER",
-            subtitle = "Her Gün Güncellenen Dev Sinema ve Dizi Arşivi",
-            badge = "SİNEMA & DİZİ",
-            imageUrl = null,
-            primaryColor = 0xFF8E24AA,
-            secondaryColor = 0xFF180A26
+            id = "sponsor_banner_3",
+            title = "Göl & Dağ Manzarası",
+            subtitle = "Kesintisiz Film ve Dizi Keyfi",
+            badge = "4K ULTRA HD",
+            imageResId = R.drawable.banner_ad_3
         ),
         AdBannerItem(
-            id = "ad_4_panel",
-            title = "WEB REKLAM YÖNETİMİ ENTEGRASYONU",
-            subtitle = "Bu reklam alanını web yönetim panelinizden dinamik olarak güncelleyebilirsiniz",
-            badge = "SPONSORLU ALAN",
-            imageUrl = null,
-            primaryColor = 0xFFFB8C00,
-            secondaryColor = 0xFF211510
+            id = "sponsor_banner_4",
+            title = "Zirve & Sis",
+            subtitle = "En Yeni Vizyon İçerikleri",
+            badge = "SİNEMA",
+            imageResId = R.drawable.banner_ad_4
+        ),
+        AdBannerItem(
+            id = "sponsor_banner_5",
+            title = "Fiyort & Gün Batımı",
+            subtitle = "Premium Canlı TV ve Eğlence",
+            badge = "CANLI YAYIN",
+            imageResId = R.drawable.banner_ad_5
         )
     )
 
-    private val _isBannerEnabled = MutableStateFlow<Boolean>(false)
+    private val _isBannerEnabled = MutableStateFlow<Boolean>(true)
     val isBannerEnabled: StateFlow<Boolean> = _isBannerEnabled.asStateFlow()
 
     fun setBannerEnabled(enabled: Boolean) {

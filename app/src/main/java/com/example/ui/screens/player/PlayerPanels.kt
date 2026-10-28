@@ -383,17 +383,52 @@ fun PlayerSidePanel(
                     }
                     true
                 }
+                AndroidKeyEvent.KEYCODE_MENU,
+                AndroidKeyEvent.KEYCODE_BOOKMARK,
+                AndroidKeyEvent.KEYCODE_PROG_YELLOW,
+                AndroidKeyEvent.KEYCODE_STAR,
+                AndroidKeyEvent.KEYCODE_F,
+                AndroidKeyEvent.KEYCODE_Y -> {
+                    if (activeItems.isNotEmpty() && focusedIndex in activeItems.indices) {
+                        val favItem = activeItems[focusedIndex]
+                        val added = com.example.model.FavoritesManager.toggleFavorite(favItem.url)
+                        try {
+                            localView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                        } catch (_: Exception) {}
+                        android.widget.Toast.makeText(
+                            context,
+                            if (added) "Favorilere eklendi: ${favItem.title}" else "Favorilerden çıkarıldı: ${favItem.title}",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    true
+                }
                 AndroidKeyEvent.KEYCODE_DPAD_CENTER,
                 AndroidKeyEvent.KEYCODE_ENTER,
                 AndroidKeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    val nowMs = System.currentTimeMillis()
-                    val isOpeningPressOrRepeat = nativeEvent.repeatCount > 0 ||
-                        nativeEvent.downTime <= panelOpenUptimeMs + 100L ||
-                        (nowMs - panelOpenTimeMs) < 250L
-                    if (!isOpeningPressOrRepeat && activeItems.isNotEmpty() && focusedIndex in activeItems.indices) {
-                        handleItemClick(activeItems[focusedIndex], activeItems)
+                    if (nativeEvent.repeatCount >= 1 || nativeEvent.isLongPress) {
+                        if (activeItems.isNotEmpty() && focusedIndex in activeItems.indices) {
+                            val favItem = activeItems[focusedIndex]
+                            val added = com.example.model.FavoritesManager.toggleFavorite(favItem.url)
+                            try {
+                                localView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            } catch (_: Exception) {}
+                            android.widget.Toast.makeText(
+                                context,
+                                if (added) "Favorilere eklendi: ${favItem.title}" else "Favorilerden çıkarıldı: ${favItem.title}",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        true
+                    } else {
+                        val nowMs = System.currentTimeMillis()
+                        val isOpeningPress = nativeEvent.downTime <= panelOpenUptimeMs + 100L ||
+                            (nowMs - panelOpenTimeMs) < 250L
+                        if (!isOpeningPress && activeItems.isNotEmpty() && focusedIndex in activeItems.indices) {
+                            handleItemClick(activeItems[focusedIndex], activeItems)
+                        }
+                        true
                     }
-                    true
                 }
                 else -> false
             }

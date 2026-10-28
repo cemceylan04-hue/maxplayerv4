@@ -44,9 +44,14 @@ import androidx.compose.runtime.*
 import android.content.res.Configuration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -110,6 +115,8 @@ fun DashboardScreen(
         }
     }
     val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
+    val favoriteSeriesNames by com.example.model.FavoritesManager.favoriteSeriesNames.collectAsState()
+    val favoriteMovieTitles by com.example.model.FavoritesManager.favoriteMovieTitles.collectAsState()
     val db = remember { com.example.model.db.AppDatabase.getDatabase(context) }
     val recentMovies by db.iptvDao().getRecentProgressForType("MOVIE").collectAsState(initial = emptyList())
     val recentSeries by db.iptvDao().getRecentProgressForType("SERIES").collectAsState(initial = emptyList())
@@ -141,6 +148,7 @@ fun DashboardScreen(
 
     val scope = rememberCoroutineScope()
     val categoryFirstItemFocusRequester = remember { FocusRequester() }
+    val selectedCategoryFocusRequester = remember { FocusRequester() }
     val currentTabFocusRequester = remember { FocusRequester() }
     val categoryListState = rememberLazyListState()
     LaunchedEffect(Unit) {
@@ -372,13 +380,22 @@ fun DashboardScreen(
     val typeLoadingStates by PlaylistRepository.typeLoadingStates.collectAsState()
     val isAdBannerEnabled by com.example.model.AdBannerManager.isBannerEnabled.collectAsState()
 
-    val displayGroups = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, knownGroupsMap) {
+    val displayGroups = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles, knownGroupsMap) {
         when {
-            currentType != null -> PlaylistRepository.getGroups(currentType)
+            currentType != null -> {
+                val regularGroups = PlaylistRepository.getGroups(currentType)
+                listOf(com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) + regularGroups
+            }
             selectedTabIndex == 4 -> {
                 val allBouquet = PlaylistRepository.getGroups()
                 val favGroupSet = visibleItems
-                    .filter { favoriteUrls.contains(it.url) }
+                    .filter {
+                        when (it.type) {
+                            ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
+                            ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
+                            ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                        }
+                    }
                     .mapNotNull { it.group?.takeIf { g -> g.isNotBlank() } }
                     .toSet()
                 val orderedFav = allBouquet.filter { favGroupSet.contains(it) }
@@ -390,6 +407,27 @@ fun DashboardScreen(
     }
     var selectedGroup by remember(selectedTabIndex) {
         mutableStateOf(com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex])
+    }
+
+    val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    val maxLeftThresholdPx = remember(density) { with(density) { 36.dp.toPx() } }
+
+    val navigateToActiveCategory: () -> Unit = {
+        if (isLandscape && displayGroups.isNotEmpty()) {
+            val selIdx = displayGroups.indexOf(selectedGroup).coerceAtLeast(0)
+            scope.launch {
+                if (selIdx > 0) {
+                    categoryListState.scrollToItem(selIdx)
+                } else {
+                    categoryListState.scrollToItem(0)
+                }
+                kotlinx.coroutines.delay(20)
+                try {
+                    selectedCategoryFocusRequester.requestFocus()
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     val currentActivePlaylistUrl by PlaylistRepository.currentPlaylistUrl.collectAsState()
@@ -409,7 +447,14 @@ fun DashboardScreen(
             if (saved != null && displayGroups.contains(saved)) {
                 selectedGroup = saved
             } else if (selectedGroup == null || !displayGroups.contains(selectedGroup)) {
-                selectedGroup = displayGroups.first()
+                selectedGroup = if (displayGroups.size > 1) displayGroups[1] else displayGroups.first()
+            }
+        } else if (selectedTabIndex == 4) {
+            val saved = com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex]
+            if (saved != null && displayGroups.contains(saved)) {
+                selectedGroup = saved
+            } else {
+                selectedGroup = null
             }
         } else if (selectedGroup != null && displayGroups.isNotEmpty() && !displayGroups.contains(selectedGroup)) {
             selectedGroup = if (selectedTabIndex in 1..3) displayGroups.firstOrNull() else null
@@ -494,26 +539,55 @@ fun DashboardScreen(
         }
     }
 
-    val currentTabItems = remember(visibleItems, selectedTabIndex, selectedGroup, searchQuery, favoriteUrls) {
+    val currentTabItems = remember(visibleItems, selectedTabIndex, selectedGroup, searchQuery, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles) {
         when (selectedTabIndex) {
             1 -> {
-                PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.LIVE).filter {
-                    it.title.contains(searchQuery, ignoreCase = true)
+                if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                    visibleItems.filter {
+                        it.type == ItemType.LIVE &&
+                            com.example.model.FavoritesManager.isFavorite(it.url) &&
+                            it.title.contains(searchQuery, ignoreCase = true)
+                    }
+                } else {
+                    PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.LIVE).filter {
+                        it.title.contains(searchQuery, ignoreCase = true)
+                    }
                 }
             }
             2 -> {
-                PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.MOVIE).filter {
-                    it.title.contains(searchQuery, ignoreCase = true)
+                if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                    visibleItems.filter {
+                        it.type == ItemType.MOVIE &&
+                            com.example.model.FavoritesManager.isMovieFavorite(it) &&
+                            it.title.contains(searchQuery, ignoreCase = true)
+                    }
+                } else {
+                    PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.MOVIE).filter {
+                        it.title.contains(searchQuery, ignoreCase = true)
+                    }
                 }
             }
             3 -> {
-                PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.SERIES).filter {
-                    it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true)
+                if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                    visibleItems.filter {
+                        it.type == ItemType.SERIES &&
+                            com.example.model.FavoritesManager.isSeriesFavorite(it) &&
+                            (it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true))
+                    }
+                } else {
+                    PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.SERIES).filter {
+                        it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true)
+                    }
                 }
             }
             4 -> {
                 visibleItems.filter {
-                    favoriteUrls.contains(it.url) &&
+                    val isFav = when (it.type) {
+                        ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
+                        ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
+                        ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                    }
+                    isFav &&
                         (selectedGroup == null || it.group == selectedGroup) &&
                         (it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true))
                 }
@@ -522,25 +596,47 @@ fun DashboardScreen(
         }
     }
 
-    val groupCounts = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls) {
+    val groupCounts = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles) {
         when {
             currentType != null -> {
-                visibleItems.asSequence().filter { it.type == currentType }
+                val map = visibleItems.asSequence().filter { it.type == currentType }
                     .groupingBy { it.group ?: "" }
                     .eachCount()
+                    .toMutableMap()
+                val favCount = when (currentType) {
+                    ItemType.LIVE -> visibleItems.count { it.type == ItemType.LIVE && com.example.model.FavoritesManager.isFavorite(it.url) }
+                    ItemType.MOVIE -> visibleItems.count { it.type == ItemType.MOVIE && com.example.model.FavoritesManager.isMovieFavorite(it) }
+                    ItemType.SERIES -> visibleItems.filter { it.type == ItemType.SERIES && com.example.model.FavoritesManager.isSeriesFavorite(it) }
+                        .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
+                        .size
+                }
+                map[com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME] = favCount
+                map
             }
             selectedTabIndex == 4 -> {
-                visibleItems.asSequence().filter { favoriteUrls.contains(it.url) }
-                    .groupingBy { it.group ?: "" }
-                    .eachCount()
+                visibleItems.asSequence().filter {
+                    when (it.type) {
+                        ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
+                        ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
+                        ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                    }
+                }
+                .groupingBy { it.group ?: "" }
+                .eachCount()
             }
             else -> emptyMap()
         }
     }
-    val totalTypeCount = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls) {
+    val totalTypeCount = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles) {
         when {
             currentType != null -> visibleItems.count { it.type == currentType }
-            selectedTabIndex == 4 -> visibleItems.count { favoriteUrls.contains(it.url) }
+            selectedTabIndex == 4 -> visibleItems.count {
+                when (it.type) {
+                    ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
+                    ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
+                    ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                }
+            }
             else -> 0
         }
     }
@@ -869,7 +965,7 @@ fun DashboardScreen(
                             .fillMaxHeight()
                             .focusProperties {
                                 if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
-                                    down = categoryFirstItemFocusRequester
+                                    down = selectedCategoryFocusRequester
                                 }
                             },
                         verticalAlignment = Alignment.CenterVertically
@@ -887,9 +983,15 @@ fun DashboardScreen(
                                         if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
                                             if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
                                                 scope.launch {
-                                                    categoryListState.scrollToItem(0)
+                                                    val selIdx = displayGroups.indexOf(selectedGroup).takeIf { it >= 0 } ?: 0
+                                                    if (selIdx > 0) {
+                                                        categoryListState.scrollToItem(selIdx)
+                                                    } else {
+                                                        categoryListState.scrollToItem(0)
+                                                    }
+                                                    kotlinx.coroutines.delay(20)
                                                     try {
-                                                        categoryFirstItemFocusRequester.requestFocus()
+                                                        selectedCategoryFocusRequester.requestFocus()
                                                     } catch (_: Exception) {}
                                                 }
                                                 true
@@ -1239,6 +1341,7 @@ fun DashboardScreen(
                         totalTypeCount = totalTypeCount,
                         categoryListState = categoryListState,
                         firstItemFocusRequester = categoryFirstItemFocusRequester,
+                        selectedCategoryFocusRequester = selectedCategoryFocusRequester,
                         currentTabFocusRequester = currentTabFocusRequester,
                         modifier = Modifier
                             .width(260.dp)
@@ -1255,7 +1358,7 @@ fun DashboardScreen(
                         .fillMaxHeight()
                         .focusProperties {
                             if (isLandscape && selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
-                                left = categoryFirstItemFocusRequester
+                                left = selectedCategoryFocusRequester
                             }
                         }
                 ) {
@@ -1285,18 +1388,7 @@ fun DashboardScreen(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(bottom = 32.dp)
                         ) {
-                            // Reklam / Duyuru Slider Banner (Web arayüzü reklam yönetimi entegrasyonu)
-                            if (isAdBannerEnabled) {
-                                item {
-                                    com.example.ui.components.AdSliderBanner(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                                        height = if (isLandscape) 112.dp else 100.dp
-                                    )
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                }
-                            }
+                            // Anasayfa (Tab 0) sabit kalacak (slider eklenmedi)
 
                             // Hero Banner
                             if (heroItem != null) {
@@ -1755,8 +1847,9 @@ fun DashboardScreen(
                                 com.example.ui.components.AdSliderBanner(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                                    height = if (isLandscape) 100.dp else 92.dp
+                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
+                                        .focusProperties { canFocus = false },
+                                    height = if (isLandscape) 120.dp else 100.dp
                                 )
                             }
 
@@ -1812,28 +1905,50 @@ fun DashboardScreen(
                                         .fillMaxWidth()
                                         .focusProperties {
                                             if (isLandscape && displayGroups.isNotEmpty()) {
-                                                left = categoryFirstItemFocusRequester
+                                                left = selectedCategoryFocusRequester
                                             }
                                         }
                                         .onPreviewKeyEvent { keyEvent ->
                                             if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                                scope.launch {
-                                                    if (categoryListState.firstVisibleItemIndex > 0) {
-                                                        categoryListState.scrollToItem(0)
+                                                if (isLandscape && displayGroups.isNotEmpty()) {
+                                                    val moved = focusManager.moveFocus(FocusDirection.Left)
+                                                    if (!moved) {
+                                                        navigateToActiveCategory()
+                                                        return@onPreviewKeyEvent true
                                                     }
+                                                    return@onPreviewKeyEvent true
                                                 }
                                             }
                                             false
                                         }
                                 ) {
-                                    items(currentTabItems) { channel ->
-                                        ChannelCard(item = channel, onClick = {
-                                            if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
-                                                itemToUnlock = channel
-                                            } else {
-                                                playWithPlaylist(channel, currentTabItems)
+                                    items(currentTabItems, key = { "live_" + it.url.ifBlank { it.title } }) { channel ->
+                                        var isAtLeftEdge by remember { mutableStateOf(false) }
+                                        val cardModifier = Modifier
+                                            .onGloballyPositioned { coords ->
+                                                val x = coords.positionInParent().x
+                                                isAtLeftEdge = (x <= maxLeftThresholdPx)
                                             }
-                                        })
+                                            .onPreviewKeyEvent { keyEvent ->
+                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft && isAtLeftEdge) {
+                                                    navigateToActiveCategory()
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            }
+
+                                        ChannelCard(
+                                            item = channel,
+                                            modifier = cardModifier,
+                                            onClick = {
+                                                if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
+                                                    itemToUnlock = channel
+                                                } else {
+                                                    playWithPlaylist(channel, currentTabItems)
+                                                }
+                                            }
+                                        )
                                     }
                                 }
                             }
@@ -1848,8 +1963,9 @@ fun DashboardScreen(
                                 com.example.ui.components.AdSliderBanner(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                                    height = if (isLandscape) 100.dp else 92.dp
+                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
+                                        .focusProperties { canFocus = false },
+                                    height = if (isLandscape) 120.dp else 100.dp
                                 )
                             }
 
@@ -1906,30 +2022,52 @@ fun DashboardScreen(
                                         .fillMaxWidth()
                                         .focusProperties {
                                             if (isLandscape && displayGroups.isNotEmpty()) {
-                                                left = categoryFirstItemFocusRequester
+                                                left = selectedCategoryFocusRequester
                                             }
                                         }
                                         .onPreviewKeyEvent { keyEvent ->
                                             if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                                scope.launch {
-                                                    if (categoryListState.firstVisibleItemIndex > 0) {
-                                                        categoryListState.scrollToItem(0)
+                                                if (isLandscape && displayGroups.isNotEmpty()) {
+                                                    val moved = focusManager.moveFocus(FocusDirection.Left)
+                                                    if (!moved) {
+                                                        navigateToActiveCategory()
+                                                        return@onPreviewKeyEvent true
                                                     }
+                                                    return@onPreviewKeyEvent true
                                                 }
                                             }
                                             false
                                         }
                                 ) {
-                                    items(currentTabItems) { movie ->
-                                        MovieCard(item = movie, onClick = {
-                                            if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
-                                                itemToUnlock = movie
-                                                playlistForUnlock = currentTabItems
-                                            } else {
-                                                selectedMoviePlaylist = currentTabItems
-                                                selectedMovie = movie
+                                    items(currentTabItems, key = { "movie_" + it.url.ifBlank { it.title } }) { movie ->
+                                        var isAtLeftEdge by remember { mutableStateOf(false) }
+                                        val cardModifier = Modifier
+                                            .onGloballyPositioned { coords ->
+                                                val x = coords.positionInParent().x
+                                                isAtLeftEdge = (x <= maxLeftThresholdPx)
                                             }
-                                        })
+                                            .onPreviewKeyEvent { keyEvent ->
+                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft && isAtLeftEdge) {
+                                                    navigateToActiveCategory()
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            }
+
+                                        MovieCard(
+                                            item = movie,
+                                            modifier = cardModifier,
+                                            onClick = {
+                                                if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                                    itemToUnlock = movie
+                                                    playlistForUnlock = currentTabItems
+                                                } else {
+                                                    selectedMoviePlaylist = currentTabItems
+                                                    selectedMovie = movie
+                                                }
+                                            }
+                                        )
                                     }
                                 }
                             } else {
@@ -2028,8 +2166,9 @@ fun DashboardScreen(
                                 com.example.ui.components.AdSliderBanner(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                                    height = if (isLandscape) 100.dp else 92.dp
+                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
+                                        .focusProperties { canFocus = false },
+                                    height = if (isLandscape) 120.dp else 100.dp
                                 )
                             }
 
@@ -2087,15 +2226,18 @@ fun DashboardScreen(
                                         .fillMaxWidth()
                                         .focusProperties {
                                             if (isLandscape && displayGroups.isNotEmpty()) {
-                                                left = categoryFirstItemFocusRequester
+                                                left = selectedCategoryFocusRequester
                                             }
                                         }
                                         .onPreviewKeyEvent { keyEvent ->
                                             if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                                scope.launch {
-                                                    if (categoryListState.firstVisibleItemIndex > 0) {
-                                                        categoryListState.scrollToItem(0)
+                                                if (isLandscape && displayGroups.isNotEmpty()) {
+                                                    val moved = focusManager.moveFocus(FocusDirection.Left)
+                                                    if (!moved) {
+                                                        navigateToActiveCategory()
+                                                        return@onPreviewKeyEvent true
                                                     }
+                                                    return@onPreviewKeyEvent true
                                                 }
                                             }
                                             false
@@ -2129,14 +2271,30 @@ fun DashboardScreen(
                                         }
                                     }
 
-                                    items(seriesGroups.keys.toList()) { seriesName ->
+                                    items(seriesGroups.keys.toList(), key = { "series_$it" }) { seriesName ->
                                         val episodes = seriesGroups[seriesName] ?: emptyList()
                                         val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.first()
+                                        var isAtLeftEdge by remember { mutableStateOf(false) }
+                                        val cardModifier = Modifier
+                                            .onGloballyPositioned { coords ->
+                                                val x = coords.positionInParent().x
+                                                isAtLeftEdge = (x <= maxLeftThresholdPx)
+                                            }
+                                            .onPreviewKeyEvent { keyEvent ->
+                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft && isAtLeftEdge) {
+                                                    navigateToActiveCategory()
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            }
+
                                         SeriesCard(
                                             seriesName = seriesName,
                                             item = posterItem,
                                             episodeCount = episodes.size,
                                             episodes = episodes,
+                                            modifier = cardModifier,
                                             onPlayEpisode = { ep ->
                                                 if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
                                                     playlistForUnlock = episodes
@@ -2230,15 +2388,13 @@ fun DashboardScreen(
                                     }
                                 }
                             } else {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Adaptive(minSize = 115.dp),
+                                LazyColumn(
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp),
                                     modifier = Modifier.fillMaxSize()
                                 ) {
                                     if (recentFavorites.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty() && selectedFavoriteFilter == 0) {
-                                        item(key = "fav_recent_section", span = { GridItemSpan(maxLineSpan) }) {
+                                        item(key = "fav_recent_section") {
                                             Column(modifier = Modifier.fillMaxWidth()) {
                                                 Text(
                                                     text = stringResource(R.string.continue_watching),
@@ -2273,266 +2429,289 @@ fun DashboardScreen(
 
                                     // 1. CANLI TV'LER BÖLÜMÜ
                                     if (showLiveSection) {
-                                        item(key = "fav_header_live", span = { GridItemSpan(maxLineSpan) }) {
-                                            Surface(
-                                                color = Color(0xFF161B24),
-                                                shape = RoundedCornerShape(10.dp),
-                                                border = BorderStroke(1.dp, Color(0xFF42A5F5).copy(alpha = 0.38f)),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(top = 4.dp, bottom = 2.dp)
-                                            ) {
-                                                Row(
+                                        item(key = "fav_section_live") {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Surface(
+                                                    color = Color(0xFF161B24),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    border = BorderStroke(1.dp, Color(0xFF42A5F5).copy(alpha = 0.38f)),
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                        .padding(bottom = 8.dp)
                                                 ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .width(4.dp)
-                                                                .height(18.dp)
-                                                                .background(Color(0xFF42A5F5), RoundedCornerShape(2.dp))
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Icon(
-                                                            imageVector = Icons.Default.LiveTv,
-                                                            contentDescription = null,
-                                                            tint = Color(0xFF42A5F5),
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Text(
-                                                            text = stringResource(R.string.fav_section_live),
-                                                            color = Color.White,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            fontSize = 15.sp
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Surface(
-                                                            color = Color(0xFF42A5F5).copy(alpha = 0.2f),
-                                                            shape = RoundedCornerShape(12.dp)
-                                                        ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .width(4.dp)
+                                                                    .height(18.dp)
+                                                                    .background(Color(0xFF42A5F5), RoundedCornerShape(2.dp))
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Icon(
+                                                                imageVector = Icons.Default.LiveTv,
+                                                                contentDescription = null,
+                                                                tint = Color(0xFF42A5F5),
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
                                                             Text(
-                                                                text = stringResource(R.string.fav_count_live, favLive.size),
-                                                                color = Color(0xFF90CAF9),
+                                                                text = stringResource(R.string.fav_section_live),
+                                                                color = Color.White,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                fontSize = 15.sp
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Surface(
+                                                                color = Color(0xFF42A5F5).copy(alpha = 0.2f),
+                                                                shape = RoundedCornerShape(12.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = stringResource(R.string.fav_count_live, favLive.size),
+                                                                    color = Color(0xFF90CAF9),
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    fontSize = 11.sp,
+                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                )
+                                                            }
+                                                        }
+                                                        if (selectedFavoriteFilter == 0 && (favMovies.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
+                                                            Text(
+                                                                text = stringResource(R.string.filter_all),
+                                                                color = Color(0xFF42A5F5),
+                                                                fontSize = 12.sp,
                                                                 fontWeight = FontWeight.Bold,
-                                                                fontSize = 11.sp,
-                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                modifier = Modifier.clickable { selectedFavoriteFilter = 1 }
                                                             )
                                                         }
                                                     }
-                                                    if (selectedFavoriteFilter == 0 && (favMovies.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
-                                                        Text(
-                                                            text = stringResource(R.string.filter_all),
-                                                            color = Color(0xFF42A5F5),
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.clickable { selectedFavoriteFilter = 1 }
+                                                }
+
+                                                LazyRow(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    items(favLive, key = { "fav_live_" + it.url.ifBlank { it.title } }) { item ->
+                                                        MovieCard(
+                                                            item = item,
+                                                            modifier = Modifier.width(if (isLandscape) 135.dp else 122.dp),
+                                                            badgeText = item.group?.takeIf { it.isNotBlank() } ?: liveBadgeLabel,
+                                                            onClick = {
+                                                                if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                                                    itemToUnlock = item
+                                                                } else {
+                                                                    playWithPlaylist(item, favLive)
+                                                                }
+                                                            }
                                                         )
                                                     }
                                                 }
                                             }
-                                        }
-
-                                        items(favLive, key = { "fav_live_" + it.url.ifBlank { it.title } }) { item ->
-                                            MovieCard(
-                                                item = item,
-                                                modifier = Modifier.fillMaxWidth(),
-                                                badgeText = item.group?.takeIf { it.isNotBlank() } ?: liveBadgeLabel,
-                                                onClick = {
-                                                    if (com.example.model.ParentalControlManager.isItemLocked(item)) {
-                                                        itemToUnlock = item
-                                                    } else {
-                                                        playWithPlaylist(item, favLive)
-                                                    }
-                                                }
-                                            )
                                         }
                                     }
 
                                     // 2. FİLMLER BÖLÜMÜ
                                     if (showMoviesSection) {
-                                        item(key = "fav_header_movies", span = { GridItemSpan(maxLineSpan) }) {
-                                            Surface(
-                                                color = Color(0xFF161B24),
-                                                shape = RoundedCornerShape(10.dp),
-                                                border = BorderStroke(1.dp, Color(0xFFE50914).copy(alpha = 0.38f)),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(top = if (showLiveSection) 12.dp else 4.dp, bottom = 2.dp)
-                                            ) {
-                                                Row(
+                                        item(key = "fav_section_movies") {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Surface(
+                                                    color = Color(0xFF161B24),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    border = BorderStroke(1.dp, Color(0xFFE50914).copy(alpha = 0.38f)),
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                        .padding(bottom = 8.dp)
                                                 ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .width(4.dp)
-                                                                .height(18.dp)
-                                                                .background(Color(0xFFE50914), RoundedCornerShape(2.dp))
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Icon(
-                                                            imageVector = Icons.Default.Movie,
-                                                            contentDescription = null,
-                                                            tint = Color(0xFFE50914),
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Text(
-                                                            text = stringResource(R.string.fav_section_movies),
-                                                            color = Color.White,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            fontSize = 15.sp
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Surface(
-                                                            color = Color(0xFFE50914).copy(alpha = 0.2f),
-                                                            shape = RoundedCornerShape(12.dp)
-                                                        ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .width(4.dp)
+                                                                    .height(18.dp)
+                                                                    .background(Color(0xFFE50914), RoundedCornerShape(2.dp))
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Icon(
+                                                                imageVector = Icons.Default.Movie,
+                                                                contentDescription = null,
+                                                                tint = Color(0xFFE50914),
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
                                                             Text(
-                                                                text = stringResource(R.string.fav_count_movies, favMovies.size),
-                                                                color = Color(0xFFFF6B6B),
+                                                                text = stringResource(R.string.fav_section_movies),
+                                                                color = Color.White,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                fontSize = 15.sp
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Surface(
+                                                                color = Color(0xFFE50914).copy(alpha = 0.2f),
+                                                                shape = RoundedCornerShape(12.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = stringResource(R.string.fav_count_movies, favMovies.size),
+                                                                    color = Color(0xFFFF6B6B),
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    fontSize = 11.sp,
+                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                )
+                                                            }
+                                                        }
+                                                        if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
+                                                            Text(
+                                                                text = stringResource(R.string.filter_all),
+                                                                color = Color(0xFFE50914),
+                                                                fontSize = 12.sp,
                                                                 fontWeight = FontWeight.Bold,
-                                                                fontSize = 11.sp,
-                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                modifier = Modifier.clickable { selectedFavoriteFilter = 2 }
                                                             )
                                                         }
                                                     }
-                                                    if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
-                                                        Text(
-                                                            text = stringResource(R.string.filter_all),
-                                                            color = Color(0xFFE50914),
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.clickable { selectedFavoriteFilter = 2 }
+                                                }
+
+                                                LazyRow(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    items(favMovies, key = { "fav_movie_" + it.url.ifBlank { it.title } }) { item ->
+                                                        MovieCard(
+                                                            item = item,
+                                                            modifier = Modifier.width(if (isLandscape) 135.dp else 122.dp),
+                                                            badgeText = item.group?.takeIf { it.isNotBlank() } ?: movieBadgeLabel,
+                                                            onClick = {
+                                                                if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                                                    itemToUnlock = item
+                                                                    playlistForUnlock = favMovies
+                                                                } else {
+                                                                    selectedMoviePlaylist = favMovies
+                                                                    selectedMovie = item
+                                                                }
+                                                            }
                                                         )
                                                     }
                                                 }
                                             }
-                                        }
-
-                                        items(favMovies, key = { "fav_movie_" + it.url.ifBlank { it.title } }) { item ->
-                                            MovieCard(
-                                                item = item,
-                                                modifier = Modifier.fillMaxWidth(),
-                                                badgeText = item.group?.takeIf { it.isNotBlank() } ?: movieBadgeLabel,
-                                                onClick = {
-                                                    if (com.example.model.ParentalControlManager.isItemLocked(item)) {
-                                                        itemToUnlock = item
-                                                        playlistForUnlock = favMovies
-                                                    } else {
-                                                        selectedMoviePlaylist = favMovies
-                                                        selectedMovie = item
-                                                    }
-                                                }
-                                            )
                                         }
                                     }
 
                                     // 3. DİZİLER BÖLÜMÜ
                                     if (showSeriesSection) {
-                                        item(key = "fav_header_series", span = { GridItemSpan(maxLineSpan) }) {
-                                            Surface(
-                                                color = Color(0xFF161B24),
-                                                shape = RoundedCornerShape(10.dp),
-                                                border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.38f)),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(top = if (showLiveSection || showMoviesSection) 12.dp else 4.dp, bottom = 2.dp)
-                                            ) {
-                                                Row(
+                                        item(key = "fav_section_series") {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Surface(
+                                                    color = Color(0xFF161B24),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.38f)),
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                        .padding(bottom = 8.dp)
                                                 ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .width(4.dp)
-                                                                .height(18.dp)
-                                                                .background(Color(0xFFFFB300), RoundedCornerShape(2.dp))
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Icon(
-                                                            imageVector = Icons.Default.Tv,
-                                                            contentDescription = null,
-                                                            tint = Color(0xFFFFB300),
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Text(
-                                                            text = stringResource(R.string.fav_section_series),
-                                                            color = Color.White,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            fontSize = 15.sp
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Surface(
-                                                            color = Color(0xFFFFB300).copy(alpha = 0.2f),
-                                                            shape = RoundedCornerShape(12.dp)
-                                                        ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.SpaceBetween
+                                                    ) {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .width(4.dp)
+                                                                    .height(18.dp)
+                                                                    .background(Color(0xFFFFB300), RoundedCornerShape(2.dp))
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Icon(
+                                                                imageVector = Icons.Default.Tv,
+                                                                contentDescription = null,
+                                                                tint = Color(0xFFFFB300),
+                                                                modifier = Modifier.size(20.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
                                                             Text(
-                                                                text = stringResource(R.string.fav_count_series, favSeriesGroups.size),
-                                                                color = Color(0xFFFFCA28),
+                                                                text = stringResource(R.string.fav_section_series),
+                                                                color = Color.White,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                fontSize = 15.sp
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Surface(
+                                                                color = Color(0xFFFFB300).copy(alpha = 0.2f),
+                                                                shape = RoundedCornerShape(12.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = stringResource(R.string.fav_count_series, favSeriesGroups.size),
+                                                                    color = Color(0xFFFFCA28),
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    fontSize = 11.sp,
+                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                )
+                                                            }
+                                                        }
+                                                        if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favMovies.isNotEmpty())) {
+                                                            Text(
+                                                                text = stringResource(R.string.filter_all),
+                                                                color = Color(0xFFFFB300),
+                                                                fontSize = 12.sp,
                                                                 fontWeight = FontWeight.Bold,
-                                                                fontSize = 11.sp,
-                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                modifier = Modifier.clickable { selectedFavoriteFilter = 3 }
                                                             )
                                                         }
                                                     }
-                                                    if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favMovies.isNotEmpty())) {
-                                                        Text(
-                                                            text = stringResource(R.string.filter_all),
-                                                            color = Color(0xFFFFB300),
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.clickable { selectedFavoriteFilter = 3 }
-                                                        )
-                                                    }
                                                 }
-                                            }
-                                        }
 
-                                        items(favSeriesGroups, key = { "fav_series_" + it.key }) { (sName, favEpisodes) ->
-                                            val primaryFavItem = favEpisodes.first()
-                                            val episodes = allSeriesMap[sName]?.takeIf { it.isNotEmpty() } ?: favEpisodes
-                                            val fallbackLogo = episodes.firstOrNull { !it.logo.isNullOrEmpty() }?.logo
-                                            val cardItem = if (primaryFavItem.logo.isNullOrEmpty() && !fallbackLogo.isNullOrEmpty()) {
-                                                primaryFavItem.copy(logo = fallbackLogo)
-                                            } else {
-                                                primaryFavItem
-                                            }
-                                            SeriesCard(
-                                                seriesName = sName,
-                                                item = cardItem,
-                                                episodeCount = episodes.size,
-                                                episodes = episodes,
-                                                onPlayEpisode = { ep ->
-                                                    if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
-                                                        playlistForUnlock = episodes
-                                                        itemToUnlock = ep
-                                                    } else {
-                                                        playWithPlaylist(ep, episodes)
-                                                    }
-                                                },
-                                                onClick = {
-                                                    if (com.example.model.ParentalControlManager.isItemLocked(cardItem)) {
-                                                        seriesToUnlock = episodes
-                                                    } else {
-                                                        selectedSeries = episodes
+                                                LazyRow(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    items(favSeriesGroups, key = { "fav_series_" + it.key }) { (sName, favEpisodes) ->
+                                                        val primaryFavItem = favEpisodes.first()
+                                                        val episodes = allSeriesMap[sName]?.takeIf { it.isNotEmpty() } ?: favEpisodes
+                                                        val fallbackLogo = episodes.firstOrNull { !it.logo.isNullOrEmpty() }?.logo
+                                                        val cardItem = if (primaryFavItem.logo.isNullOrEmpty() && !fallbackLogo.isNullOrEmpty()) {
+                                                            primaryFavItem.copy(logo = fallbackLogo)
+                                                        } else {
+                                                            primaryFavItem
+                                                        }
+                                                        Box(modifier = Modifier.width(if (isLandscape) 135.dp else 122.dp)) {
+                                                            SeriesCard(
+                                                                seriesName = sName,
+                                                                item = cardItem,
+                                                                episodeCount = episodes.size,
+                                                                episodes = episodes,
+                                                                onPlayEpisode = { ep ->
+                                                                    if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
+                                                                        playlistForUnlock = episodes
+                                                                        itemToUnlock = ep
+                                                                    } else {
+                                                                        playWithPlaylist(ep, episodes)
+                                                                    }
+                                                                },
+                                                                onClick = {
+                                                                    if (com.example.model.ParentalControlManager.isItemLocked(cardItem)) {
+                                                                        seriesToUnlock = episodes
+                                                                    } else {
+                                                                        selectedSeries = episodes
+                                                                    }
+                                                                }
+                                                            )
+                                                        }
                                                     }
                                                 }
-                                            )
+                                            }
                                         }
                                     }
                                 }
@@ -2656,8 +2835,7 @@ fun DashboardScreen(
                                                     showCategoryDrawer = false
                                                 }
                                                 .padding(horizontal = 12.dp, vertical = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
                                                 text = stringResource(R.string.filter_all).uppercase(),
@@ -2666,13 +2844,7 @@ fun DashboardScreen(
                                                 fontSize = 15.sp,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f).padding(end = 8.dp)
-                                            )
-                                            Text(
-                                                text = "$totalTypeCount",
-                                                color = if (isAllFocused) Color.White else if (isAllSelected) RedPrimary else Color(0xFFCCCCCC),
-                                                fontWeight = if (isAllSelected || isAllFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                                fontSize = 14.sp
+                                                modifier = Modifier.fillMaxWidth()
                                             )
                                         }
                                     }
@@ -2682,7 +2854,6 @@ fun DashboardScreen(
                                         val group = displayGroups[index]
                                         val isSelected = selectedGroup == group
                                         var isGroupFocused by remember { mutableStateOf(false) }
-                                        val count = groupCounts[group] ?: 0
 
                                         Row(
                                             modifier = Modifier
@@ -2714,23 +2885,29 @@ fun DashboardScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Text(
-                                                text = group.uppercase(),
-                                                color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color.White,
-                                                fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                                fontSize = 14.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
                                                 modifier = Modifier.weight(1f).padding(end = 8.dp)
-                                            )
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                            ) {
+                                                if (group == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Favorite,
+                                                        contentDescription = null,
+                                                        tint = if (isSelected) RedPrimary else Color(0xFFFFB300),
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                }
                                                 Text(
-                                                    text = "$count",
-                                                    color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color(0xFFCCCCCC),
+                                                    text = group.uppercase(),
+                                                    color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color.White,
                                                     fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                                    fontSize = 13.sp,
-                                                    modifier = Modifier.padding(end = 8.dp)
+                                                    fontSize = 14.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
                                                 val isGroupLocked = com.example.model.ParentalControlManager.isGroupLocked(group)
 
                                                 IconButton(
@@ -2785,9 +2962,10 @@ fun DashboardScreen(
     if (currentSeries != null) {
         val seriesItems = currentSeries
         val seriesName = seriesItems.firstOrNull()?.seriesName ?: seriesItems.firstOrNull()?.title ?: ""
-        val favoriteKey = seriesItems.firstOrNull()?.url ?: ""
+        val primaryItem = seriesItems.firstOrNull()
         val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
-        val isFavorite = favoriteUrls.contains(favoriteKey)
+        val favoriteSeriesNames by com.example.model.FavoritesManager.favoriteSeriesNames.collectAsState()
+        val isFavorite = primaryItem != null && com.example.model.FavoritesManager.isSeriesFavorite(primaryItem, seriesItems)
 
         var backdropUrl by remember(seriesName) { mutableStateOf<String?>(null) }
         var trailerKey by remember(seriesName) { mutableStateOf<String?>(null) }
@@ -2920,7 +3098,7 @@ fun DashboardScreen(
                                 Icon(
                                     Icons.Default.Info,
                                     contentDescription = stringResource(R.string.info_button_desc),
-                                    tint = Color.White,
+                                    tint = Color(0xFF29B6F6),
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
@@ -3081,7 +3259,14 @@ fun DashboardScreen(
                                 OutlinedButton(
                                     onClick = {
                                         coroutineScope.launch {
-                                            com.example.model.FavoritesManager.toggleFavorite(favoriteKey)
+                                            if (primaryItem != null) {
+                                                val added = com.example.model.FavoritesManager.toggleSeriesFavorite(primaryItem, seriesItems)
+                                                Toast.makeText(
+                                                    context,
+                                                    if (added) "Favorilere eklendi: $seriesName" else "Favorilerden çıkarıldı: $seriesName",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
                                         }
                                     },
                                     colors = ButtonDefaults.outlinedButtonColors(
@@ -3409,7 +3594,14 @@ fun DashboardScreen(
                                     OutlinedButton(
                                         onClick = {
                                             coroutineScope.launch {
-                                                com.example.model.FavoritesManager.toggleFavorite(favoriteKey)
+                                                if (primaryItem != null) {
+                                                    val added = com.example.model.FavoritesManager.toggleSeriesFavorite(primaryItem, seriesItems)
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (added) "Favorilere eklendi: $seriesName" else "Favorilerden çıkarıldı: $seriesName",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
                                             }
                                         },
                                         colors = ButtonDefaults.outlinedButtonColors(
@@ -3546,7 +3738,7 @@ fun DashboardScreen(
                                     Icon(
                                         Icons.Default.Info,
                                         contentDescription = stringResource(R.string.info_button_desc),
-                                        tint = Color.White,
+                                        tint = Color(0xFF29B6F6),
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -3830,6 +4022,7 @@ fun DashboardCategorySidePanel(
     modifier: Modifier = Modifier,
     categoryListState: LazyListState = rememberLazyListState(),
     firstItemFocusRequester: FocusRequester = remember { FocusRequester() },
+    selectedCategoryFocusRequester: FocusRequester = firstItemFocusRequester,
     currentTabFocusRequester: FocusRequester? = null,
     onRequestUnlock: (String) -> Unit = {}
 ) {
@@ -3844,7 +4037,7 @@ fun DashboardCategorySidePanel(
         if (selectedGroup != null) {
             val idx = displayGroups.indexOf(selectedGroup)
             if (idx > 0) {
-                listState.animateScrollToItem(idx)
+                listState.scrollToItem(idx)
             } else if (idx == 0) {
                 listState.scrollToItem(0)
             }
@@ -3859,9 +4052,15 @@ fun DashboardCategorySidePanel(
                 if (focusState.hasFocus && !hadFocus) {
                     hadFocus = true
                     scope.launch {
-                        listState.scrollToItem(0)
+                        val targetIdx = displayGroups.indexOf(selectedGroup).takeIf { it >= 0 } ?: 0
+                        if (targetIdx > 0) {
+                            listState.scrollToItem(targetIdx)
+                        } else {
+                            listState.scrollToItem(0)
+                        }
+                        kotlinx.coroutines.delay(20)
                         try {
-                            firstItemFocusRequester.requestFocus()
+                            selectedCategoryFocusRequester.requestFocus()
                         } catch (_: Exception) {}
                     }
                 } else if (!focusState.hasFocus) {
@@ -3917,18 +4116,24 @@ fun DashboardCategorySidePanel(
                 contentPadding = PaddingValues(vertical = 6.dp)
             ) {
                 // Kategoriler listesi (Buket sıralamasına göre ilk kategori varsayılan yüklenir)
-                items(displayGroups.size) { index ->
+                items(displayGroups.size, key = { index -> displayGroups[index] }) { index ->
                     val group = displayGroups[index]
                     val isSelected = selectedGroup == group
                     var isGroupFocused by remember { mutableStateOf(false) }
-                    val count = groupCounts[group] ?: 0
                     val isLocked = com.example.model.ParentalControlManager.isGroupLocked(group)
+
+                    val isTargetForFocus = (selectedGroup != null && group == selectedGroup) || (selectedGroup == null && index == 0)
+                    val itemFocusRequesterModifier = when {
+                        isTargetForFocus -> Modifier.focusRequester(selectedCategoryFocusRequester)
+                        index == 0 -> Modifier.focusRequester(firstItemFocusRequester)
+                        else -> Modifier
+                    }
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 2.dp)
-                            .then(if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+                            .then(itemFocusRequesterModifier)
                             .onFocusChanged { isGroupFocused = it.isFocused }
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionUp && index == 0) {
@@ -3960,36 +4165,33 @@ fun DashboardCategorySidePanel(
                                 }
                             }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f).padding(end = 8.dp)
-                        ) {
-                            if (isLocked) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = null,
-                                    tint = Color(0xFFFFB300),
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-                            Text(
-                                text = group.uppercase(),
-                                color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color.White,
-                                fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                        if (isLocked) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = Color(0xFFFFB300),
+                                modifier = Modifier.size(14.dp)
                             )
+                            Spacer(modifier = Modifier.width(6.dp))
+                        } else if (group == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = null,
+                                tint = if (isSelected) RedPrimary else Color(0xFFFFB300),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
                         }
                         Text(
-                            text = "$count",
-                            color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color(0xFFCCCCCC),
+                            text = group.uppercase(),
+                            color = if (isGroupFocused) Color.White else if (isSelected) RedPrimary else Color.White,
                             fontWeight = if (isSelected || isGroupFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
-                            fontSize = 12.sp
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }

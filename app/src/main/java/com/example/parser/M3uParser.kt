@@ -24,7 +24,7 @@ data class FastPreviewResult(
 )
 
 object M3uParser {
-    const val DEFAULT_USER_AGENT = "IPTVSmarters/1.0 (Linux;Android)"
+    const val DEFAULT_USER_AGENT = "IPTVSmartersPro/3.1.5 (Linux; Android 12)"
 
     fun getUnsafeOkHttpClient(): OkHttpClient {
         return try {

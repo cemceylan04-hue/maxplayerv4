@@ -105,7 +105,8 @@ fun MovieDetailDialog(
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     val favoriteUrls by FavoritesManager.favoriteUrls.collectAsState()
-    val isFavorite = favoriteUrls.contains(movie.url)
+    val favoriteMovieTitles by FavoritesManager.favoriteMovieTitles.collectAsState()
+    val isFavorite = FavoritesManager.isMovieFavorite(movie)
 
     var backdropUrl by remember(movie.url) { mutableStateOf<String?>(null) }
     var trailerKey by remember(movie.url) { mutableStateOf<String?>(null) }
@@ -313,17 +314,24 @@ fun MovieDetailDialog(
                                         verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
+                                        Text(
+                                            text = "IMDb",
+                                            color = Color.Black,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Black
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
                                         Icon(
                                             imageVector = Icons.Default.Star,
                                             contentDescription = null,
                                             tint = Color.Black,
                                             modifier = Modifier.size(12.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Spacer(modifier = Modifier.width(2.dp))
                                         Text(
                                             text = ratingText,
                                             color = Color.Black,
-                                            fontSize = 11.5.sp,
+                                            fontSize = 11.sp,
                                             fontWeight = FontWeight.ExtraBold
                                         )
                                     }
@@ -508,7 +516,12 @@ fun MovieDetailDialog(
                             OutlinedButton(
                                 onClick = {
                                     coroutineScope.launch {
-                                        FavoritesManager.toggleFavorite(movie.url)
+                                        val added = FavoritesManager.toggleMovieFavorite(movie)
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (added) "Favorilere eklendi: ${movie.title}" else "Favorilerden çıkarıldı: ${movie.title}",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
                                     }
                                 },
                                 colors = ButtonDefaults.outlinedButtonColors(
@@ -996,7 +1009,12 @@ fun MovieDetailDialog(
                                 OutlinedButton(
                                     onClick = {
                                         coroutineScope.launch {
-                                            FavoritesManager.toggleFavorite(movie.url)
+                                            val added = FavoritesManager.toggleMovieFavorite(movie)
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                if (added) "Favorilere eklendi: ${movie.title}" else "Favorilerden çıkarıldı: ${movie.title}",
+                                                android.widget.Toast.LENGTH_SHORT
+                                            ).show()
                                         }
                                     },
                                     colors = ButtonDefaults.outlinedButtonColors(

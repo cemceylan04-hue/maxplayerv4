@@ -2,12 +2,16 @@ package com.example.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.view.HapticFeedbackConstants
+import android.view.KeyEvent as AndroidKeyEvent
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -19,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.key.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -28,10 +33,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +55,157 @@ import com.example.R
 import com.example.parser.M3uItem
 import com.example.ui.theme.RedPrimary
 import java.util.Locale
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/**
+ * Modifier supporting both Android TV remote D-Pad Center long-press (and shortcut keys like MENU/YELLOW)
+ * as well as touch/mouse long-press gestures.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun Modifier.tvRemoteCardClickable(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onLockToggle: (() -> Unit)? = null,
+    onInfoClick: (() -> Unit)? = null
+): Modifier {
+    val coroutineScope = rememberCoroutineScope()
+    var longPressJob by remember { mutableStateOf<Job?>(null) }
+    var isLongPressHandled by remember { mutableStateOf(false) }
+    var keyDownTime by remember { mutableLongStateOf(0L) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            longPressJob?.cancel()
+            longPressJob = null
+            isLongPressHandled = false
+            keyDownTime = 0L
+        }
+    }
+
+    return this
+        .onFocusChanged { focusState ->
+            if (!focusState.isFocused) {
+                longPressJob?.cancel()
+                longPressJob = null
+                isLongPressHandled = false
+                keyDownTime = 0L
+            }
+        }
+        .onPreviewKeyEvent { keyEvent ->
+            val native = keyEvent.nativeKeyEvent
+            val keyCode = native.keyCode
+
+            // Check if key is DPAD Center / Enter / Select / Button A
+            val isCenterKey = keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER ||
+                    keyCode == AndroidKeyEvent.KEYCODE_ENTER ||
+                    keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER ||
+                    keyCode == AndroidKeyEvent.KEYCODE_BUTTON_A ||
+                    keyCode == AndroidKeyEvent.KEYCODE_BUTTON_SELECT
+
+            // Shortcut keys for favorites: Menu, F, Y, Bookmark, Yellow button, Star, Window
+            val isFavoriteShortcut = keyCode == AndroidKeyEvent.KEYCODE_MENU ||
+                    keyCode == AndroidKeyEvent.KEYCODE_F ||
+                    keyCode == AndroidKeyEvent.KEYCODE_Y ||
+                    keyCode == AndroidKeyEvent.KEYCODE_BOOKMARK ||
+                    keyCode == AndroidKeyEvent.KEYCODE_PROG_YELLOW ||
+                    keyCode == AndroidKeyEvent.KEYCODE_WINDOW ||
+                    keyCode == AndroidKeyEvent.KEYCODE_STAR
+
+            // Shortcut keys for lock: L, G, Green button
+            val isLockShortcut = keyCode == AndroidKeyEvent.KEYCODE_L ||
+                    keyCode == AndroidKeyEvent.KEYCODE_G ||
+                    keyCode == AndroidKeyEvent.KEYCODE_PROG_GREEN
+
+            // Shortcut keys for info / EPG / IMDb:
+            // Remote Blue Button (PROG_BLUE = 186), Info Button (INFO = 165), Guide/EPG Button (GUIDE = 172), Key.I (37), Help (259), B key (30)
+            val isInfoShortcut = keyCode == AndroidKeyEvent.KEYCODE_PROG_BLUE ||
+                    keyCode == AndroidKeyEvent.KEYCODE_INFO ||
+                    keyCode == AndroidKeyEvent.KEYCODE_GUIDE ||
+                    keyCode == AndroidKeyEvent.KEYCODE_I ||
+                    keyCode == AndroidKeyEvent.KEYCODE_HELP ||
+                    keyCode == AndroidKeyEvent.KEYCODE_B
+
+            if (isFavoriteShortcut) {
+                if (keyEvent.type == KeyEventType.KeyUp) {
+                    onLongClick()
+                    return@onPreviewKeyEvent true
+                }
+                return@onPreviewKeyEvent true
+            }
+
+            if (isLockShortcut && onLockToggle != null) {
+                if (keyEvent.type == KeyEventType.KeyUp) {
+                    onLockToggle()
+                    return@onPreviewKeyEvent true
+                }
+                return@onPreviewKeyEvent true
+            }
+
+            if (isInfoShortcut && onInfoClick != null) {
+                if (keyEvent.type == KeyEventType.KeyUp) {
+                    onInfoClick()
+                    return@onPreviewKeyEvent true
+                }
+                return@onPreviewKeyEvent true
+            }
+
+            if (isCenterKey) {
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    if (isLongPressHandled) {
+                        return@onPreviewKeyEvent true
+                    }
+                    if (native.repeatCount == 0) {
+                        isLongPressHandled = false
+                        keyDownTime = System.currentTimeMillis()
+                        longPressJob?.cancel()
+                        longPressJob = coroutineScope.launch {
+                            delay(350L)
+                            if (!isLongPressHandled) {
+                                isLongPressHandled = true
+                                onLongClick()
+                            }
+                        }
+                        // Allow initial KeyDown to pass for ripple & visual focus
+                        return@onPreviewKeyEvent false
+                    } else {
+                        // Key is being held down on TV remote (repeatCount >= 1 or isLongPress)
+                        longPressJob?.cancel()
+                        longPressJob = null
+                        if (!isLongPressHandled) {
+                            isLongPressHandled = true
+                            onLongClick()
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                } else if (keyEvent.type == KeyEventType.KeyUp) {
+                    longPressJob?.cancel()
+                    longPressJob = null
+                    val pressDuration = if (keyDownTime > 0) System.currentTimeMillis() - keyDownTime else 0L
+                    keyDownTime = 0L
+
+                    if (isLongPressHandled || pressDuration >= 350L) {
+                        if (!isLongPressHandled) {
+                            isLongPressHandled = true
+                            onLongClick()
+                        }
+                        isLongPressHandled = false
+                        // CONSUME KeyUp so clickable / combinedClickable DOES NOT trigger onClick!
+                        return@onPreviewKeyEvent true
+                    }
+                    // Short press: let clickable / combinedClickable handle normal click
+                    return@onPreviewKeyEvent false
+                }
+            }
+            false
+        }
+        .combinedClickable(
+            onClick = onClick,
+            onLongClick = onLongClick
+        )
+}
 
 @Composable
 fun HeroBanner(
@@ -100,6 +258,18 @@ fun HeroBanner(
 
     val activeBackdropUrl = backdropList.getOrNull(currentBackdropIndex) ?: item.logo
     var isFocused by remember { mutableStateOf(false) }
+    val view = LocalView.current
+    val handleToggleFavorite = {
+        val added = com.example.model.FavoritesManager.toggleFavorite(item.url)
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (added) "Favorilere eklendi: ${item.title}" else "Favorilerden çıkarıldı: ${item.title}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
 
     Box(
         modifier = Modifier
@@ -111,13 +281,17 @@ fun HeroBanner(
                 else Modifier
             )
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
+            .tvRemoteCardClickable(
+                onClick = onClick,
+                onLongClick = handleToggleFavorite
+            )
             .background(Color(0xFF0F0F17))
     ) {
         val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
         val isFavorite = favoriteUrls.contains(item.url)
         val lockedChannels by com.example.model.ParentalControlManager.lockedChannels.collectAsState()
         val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
+        val explicitlyUnlockedChannels by com.example.model.ParentalControlManager.explicitlyUnlockedChannels.collectAsState()
         val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
         val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
         val hasPin = com.example.model.ParentalControlManager.pinCode.collectAsState().value != null
@@ -193,7 +367,14 @@ fun HeroBanner(
                     Spacer(modifier = Modifier.width(10.dp))
 
                     IconButton(
-                        onClick = { com.example.model.FavoritesManager.toggleFavorite(item.url) },
+                        onClick = {
+                            val added = com.example.model.FavoritesManager.toggleFavorite(item.url)
+                            Toast.makeText(
+                                context,
+                                if (added) "Favorilere eklendi: ${item.title}" else "Favorilerden çıkarıldı: ${item.title}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
                         modifier = Modifier
                             .size(38.dp)
                             .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
@@ -210,12 +391,17 @@ fun HeroBanner(
 
                     IconButton(
                         onClick = {
-                            if (isLocked) {
-                                Toast.makeText(context, "Kanal kilidini kaldırmak için Ebeveyn Kontrolü menüsünü kullanın.", Toast.LENGTH_LONG).show()
-                            } else {
-                                com.example.model.ParentalControlManager.lockChannel(item.url, item.title, item.group, item.type.name)
-                                Toast.makeText(context, context.getString(R.string.parental_channel_locked), Toast.LENGTH_SHORT).show()
-                            }
+                            val locked = com.example.model.ParentalControlManager.toggleChannelLock(
+                                channelUrl = item.url,
+                                title = item.title,
+                                group = item.group,
+                                type = item.type.name
+                            )
+                            Toast.makeText(
+                                context,
+                                if (locked) "Kilitlendi (Varsayılan PIN: 0000): ${item.title}" else "Kilit kaldırıldı: ${item.title}",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
                         modifier = Modifier
                             .size(38.dp)
@@ -246,7 +432,7 @@ fun HeroBanner(
                         Icon(
                             Icons.Default.Info,
                             contentDescription = stringResource(R.string.info_button_desc),
-                            tint = Color.White,
+                            tint = Color(0xFF29B6F6),
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -292,10 +478,13 @@ fun MovieCard(
     onInfoClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
-    val isFavorite = favoriteUrls.contains(item.url)
+    val favoriteMovieTitles by com.example.model.FavoritesManager.favoriteMovieTitles.collectAsState()
+    val isFavorite = com.example.model.FavoritesManager.isMovieFavorite(item)
     val lockedChannels by com.example.model.ParentalControlManager.lockedChannels.collectAsState()
     val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
+    val explicitlyUnlockedChannels by com.example.model.ParentalControlManager.explicitlyUnlockedChannels.collectAsState()
     val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
     val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
     val hasPin = com.example.model.ParentalControlManager.pinCode.collectAsState().value != null
@@ -304,6 +493,43 @@ fun MovieCard(
     var showInfoDialog by remember { mutableStateOf(false) }
     var logoLoadFailed by remember(item.logo) { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
+
+    val handleToggleFavorite = {
+        val added = com.example.model.FavoritesManager.toggleMovieFavorite(item)
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (added) "Favorilere eklendi: ${item.title}" else "Favorilerden çıkarıldı: ${item.title}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val handleToggleLock = {
+        val locked = com.example.model.ParentalControlManager.toggleChannelLock(
+            channelUrl = item.url,
+            title = item.title,
+            group = item.group,
+            type = item.type.name
+        )
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (locked) "Kilitlendi (Varsayılan PIN: 0000): ${item.title}" else "Kilit kaldırıldı: ${item.title}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val handleInfoClick = {
+        if (onInfoClick != null) {
+            onInfoClick()
+        } else {
+            showInfoDialog = true
+        }
+    }
 
     Card(
         modifier = modifier
@@ -314,7 +540,12 @@ fun MovieCard(
                     .border(3.dp, RedPrimary, RoundedCornerShape(10.dp))
                 else Modifier
             )
-            .clickable(onClick = onClick),
+            .tvRemoteCardClickable(
+                onClick = onClick,
+                onLongClick = handleToggleFavorite,
+                onLockToggle = handleToggleLock,
+                onInfoClick = handleInfoClick
+            ),
         shape = RoundedCornerShape(10.dp),
         border = if (isFocused) BorderStroke(3.dp, RedPrimary) else null,
         colors = CardDefaults.cardColors(containerColor = if (isFocused) Color(0xFF262C3A) else Color(0xFF1B202A))
@@ -411,50 +642,43 @@ fun MovieCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
-                        onClick = { com.example.model.FavoritesManager.toggleFavorite(item.url) },
-                        modifier = Modifier.size(28.dp)
+                        onClick = handleToggleFavorite,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .focusProperties { canFocus = false }
                     ) {
                         Icon(
                             imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Favori",
                             tint = if (isFavorite) Color.Red else Color.LightGray,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
                     IconButton(
-                        onClick = {
-                            if (isLocked) {
-                                Toast.makeText(context, "Kanal kilidini kaldırmak için Ebeveyn Kontrolü menüsünü kullanın.", Toast.LENGTH_LONG).show()
-                            } else {
-                                com.example.model.ParentalControlManager.lockChannel(item.url, item.title, item.group, "LIVE")
-                                Toast.makeText(context, context.getString(R.string.parental_channel_locked), Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.size(28.dp)
+                        onClick = handleToggleLock,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .focusProperties { canFocus = false }
                     ) {
                         Icon(
                             imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
                             contentDescription = "Kilit",
                             tint = if (isLocked) Color(0xFFEF5350) else Color.LightGray,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
                     IconButton(
-                        onClick = {
-                            if (onInfoClick != null) {
-                                onInfoClick()
-                            } else {
-                                showInfoDialog = true
-                            }
-                        },
-                        modifier = Modifier.size(28.dp)
+                        onClick = handleInfoClick,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .focusProperties { canFocus = false }
                     ) {
                         Icon(
                             imageVector = Icons.Default.Info,
                             contentDescription = stringResource(R.string.info_button_desc),
-                            tint = Color.LightGray,
+                            tint = Color(0xFF29B6F6),
                             modifier = Modifier.size(15.dp)
                         )
                     }
@@ -476,16 +700,466 @@ fun MovieCard(
 }
 
 @Composable
-fun ChannelCard(
-    item: M3uItem,
-    onClick: () -> Unit,
-    onInfoClick: (() -> Unit)? = null
+fun LiveEpgDialog(
+    channel: M3uItem,
+    onDismiss: () -> Unit,
+    onPlay: () -> Unit
 ) {
     val context = LocalContext.current
     val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
-    val isFavorite = favoriteUrls.contains(item.url)
+    val isFavorite = favoriteUrls.contains(channel.url.trim())
+    var epgList by remember(channel.url) { mutableStateOf<List<com.example.model.EpgProgram>>(emptyList()) }
+    var nowProgram by remember(channel.url) { mutableStateOf<com.example.model.EpgProgram?>(null) }
+    var isLoading by remember(channel.url) { mutableStateOf(true) }
+
+    LaunchedEffect(channel.url) {
+        isLoading = true
+        try {
+            val list = com.example.model.EpgRepository.getFullEpg(channel)
+            val (now, _) = com.example.model.EpgRepository.getNowNext(channel)
+            epgList = list
+            nowProgram = now ?: list.firstOrNull { it.startMs <= System.currentTimeMillis() && System.currentTimeMillis() < it.endMs }
+        } catch (_: Exception) {}
+        isLoading = false
+    }
+
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", Locale.getDefault()) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        com.example.util.KeepSystemBarsHidden()
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .widthIn(max = if (isLandscape) 780.dp else 650.dp)
+                .padding(vertical = if (isLandscape) 8.dp else 16.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF10141E)),
+            border = BorderStroke(1.5.dp, Color(0xFF29B6F6).copy(alpha = 0.5f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(if (isLandscape) 14.dp else 18.dp)
+            ) {
+                // Header: Channel Logo + Channel Title + Group Badge + Close Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(if (isLandscape) 48.dp else 56.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF1B2232))
+                            .border(1.dp, Color(0xFF29B6F6).copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (!channel.logo.isNullOrBlank()) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(channel.logo)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = channel.title,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(4.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.LiveTv,
+                                contentDescription = null,
+                                tint = Color(0xFF29B6F6),
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = Color(0xFF29B6F6).copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(4.dp),
+                                border = BorderStroke(1.dp, Color(0xFF29B6F6))
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = Color(0xFF29B6F6),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "EPG YAYIN AKIŞI",
+                                        color = Color(0xFF29B6F6),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            if (!channel.group.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    color = Color(0xFF232D3F),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = channel.group,
+                                        color = Color(0xFFB0BEC5),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = channel.title,
+                            color = Color.White,
+                            fontSize = if (isLandscape) 17.sp else 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Kapat",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = Color(0xFF242C3D), thickness = 1.dp)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Content: Current program + Upcoming programs OR fallback message
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(160.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF29B6F6),
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Yayın akışı bilgisi yükleniyor...",
+                                color = Color(0xFF90CAF9),
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                } else if (nowProgram != null || epgList.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = if (isLandscape) 280.dp else 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        // Currently Playing Program Card
+                        val currentProg = nowProgram ?: epgList.firstOrNull()
+                        if (currentProg != null) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF161F2E)),
+                                border = BorderStroke(1.dp, Color(0xFF29B6F6).copy(alpha = 0.6f))
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Surface(
+                                            color = Color(0xFFE53935),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "CANLI YAYINDA",
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Black,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+
+                                        if (currentProg.startMs > 0L && currentProg.endMs > 0L) {
+                                            Text(
+                                                text = "${timeFormat.format(java.util.Date(currentProg.startMs))} - ${timeFormat.format(java.util.Date(currentProg.endMs))}",
+                                                color = Color(0xFF40C4FF),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    Text(
+                                        text = currentProg.title,
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+
+                                    if (currentProg.startMs > 0L && currentProg.endMs > currentProg.startMs) {
+                                        val nowMs = System.currentTimeMillis()
+                                        val total = (currentProg.endMs - currentProg.startMs).toFloat()
+                                        val elapsed = (nowMs - currentProg.startMs).toFloat().coerceIn(0f, total)
+                                        val progress = if (total > 0f) elapsed / total else 0f
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        LinearProgressIndicator(
+                                            progress = { progress },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(4.dp)
+                                                .clip(RoundedCornerShape(2.dp)),
+                                            color = Color(0xFF29B6F6),
+                                            trackColor = Color(0xFF222F44)
+                                        )
+                                    }
+
+                                    if (!currentProg.description.isNullOrBlank()) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = currentProg.description,
+                                            color = Color(0xFFCFD8DC),
+                                            fontSize = 12.sp,
+                                            lineHeight = 16.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Upcoming programs
+                        val upcoming = epgList.filter { it != currentProg && it.startMs >= (currentProg?.startMs ?: 0L) }
+                        if (upcoming.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "SIRADAKİ PROGRAMLAR",
+                                color = Color(0xFF90CAF9),
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+
+                            upcoming.take(8).forEach { prog ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 5.dp)
+                                        .background(Color(0xFF131824), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (prog.startMs > 0L) {
+                                        Surface(
+                                            color = Color(0xFF1F283B),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = timeFormat.format(java.util.Date(prog.startMs)),
+                                                color = Color(0xFF81D4FA),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                    }
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = prog.title,
+                                            color = Color(0xFFECEFF1),
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (!prog.description.isNullOrBlank()) {
+                                            Text(
+                                                text = prog.description,
+                                                color = Color(0xFF90A4AE),
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback when stream provider doesn't supply EPG
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF151A26)),
+                        border = BorderStroke(1.dp, Color(0xFF263248))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.LiveTv,
+                                contentDescription = null,
+                                tint = Color(0xFF29B6F6),
+                                modifier = Modifier.size(38.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Yayın Akışı (EPG) Bilgisi",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Bu kanal için IPTV sağlayıcınız tarafından anlık EPG program rehberi iletilmemektedir.",
+                                color = Color(0xFFB0BEC5),
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                color = Color(0xFF1E2638),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "Kumanda Kısayolu: Mavi Tuş / Info tuşu ile tüm kanallarda EPG açabilirsiniz",
+                                    color = Color(0xFF81D4FA),
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Action Buttons Row: Play Channel + Favorite + Close
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = {
+                            onDismiss()
+                            onPlay()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = RedPrimary),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Kanalı İzle",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            com.example.model.FavoritesManager.toggleFavorite(channel.url)
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, if (isFavorite) Color(0xFFEF5350) else Color(0xFF37474F)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = null,
+                            tint = if (isFavorite) Color(0xFFEF5350) else Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isFavorite) "Favoride" else "Favori",
+                            color = Color.White,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color(0xFF37474F)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "Kapat",
+                            color = Color.White,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChannelCard(
+    item: M3uItem,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onInfoClick: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
+    val isFavorite = favoriteUrls.contains(item.url.trim())
     val lockedChannels by com.example.model.ParentalControlManager.lockedChannels.collectAsState()
     val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
+    val explicitlyUnlockedChannels by com.example.model.ParentalControlManager.explicitlyUnlockedChannels.collectAsState()
     val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
     val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
     val hasPin = com.example.model.ParentalControlManager.pinCode.collectAsState().value != null
@@ -495,8 +1169,45 @@ fun ChannelCard(
     var logoLoadFailed by remember(item.logo) { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
 
+    val handleToggleFavorite = {
+        val added = com.example.model.FavoritesManager.toggleFavorite(item.url)
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (added) "Favorilere eklendi: ${item.title}" else "Favorilerden çıkarıldı: ${item.title}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val handleToggleLock = {
+        val locked = com.example.model.ParentalControlManager.toggleChannelLock(
+            channelUrl = item.url,
+            title = item.title,
+            group = item.group,
+            type = "LIVE"
+        )
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (locked) "Kilitlendi (Varsayılan PIN: 0000): ${item.title}" else "Kilit kaldırıldı: ${item.title}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val handleInfoClick = {
+        if (onInfoClick != null) {
+            onInfoClick()
+        } else {
+            showInfoDialog = true
+        }
+    }
+
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .onFocusChanged { isFocused = it.isFocused }
             .then(
@@ -505,7 +1216,12 @@ fun ChannelCard(
                     .border(3.dp, RedPrimary, RoundedCornerShape(10.dp))
                 else Modifier
             )
-            .clickable(onClick = onClick),
+            .tvRemoteCardClickable(
+                onClick = onClick,
+                onLongClick = handleToggleFavorite,
+                onLockToggle = handleToggleLock,
+                onInfoClick = handleInfoClick
+            ),
         shape = RoundedCornerShape(10.dp),
         border = if (isFocused) BorderStroke(3.dp, RedPrimary) else null,
         colors = CardDefaults.cardColors(containerColor = if (isFocused) Color(0xFF262C3A) else Color(0xFF1B202A))
@@ -590,68 +1306,70 @@ fun ChannelCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = { com.example.model.FavoritesManager.toggleFavorite(item.url) },
-                    modifier = Modifier.size(28.dp)
+                    onClick = handleToggleFavorite,
+                    modifier = Modifier
+                        .size(32.dp)
+                        .focusProperties { canFocus = false }
                 ) {
                     Icon(
                         imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Favori",
                         tint = if (isFavorite) Color.Red else Color.LightGray,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
 
                 IconButton(
-                    onClick = {
-                        if (isLocked) {
-                            Toast.makeText(context, "Film kilidini kaldırmak için Ebeveyn Kontrolü menüsünü kullanın.", Toast.LENGTH_LONG).show()
-                        } else {
-                            com.example.model.ParentalControlManager.lockChannel(item.url, item.title, item.group, "MOVIE")
-                            Toast.makeText(context, context.getString(R.string.parental_channel_locked), Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier.size(28.dp)
+                    onClick = handleToggleLock,
+                    modifier = Modifier
+                        .size(32.dp)
+                        .focusProperties { canFocus = false }
                 ) {
                     Icon(
                         imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
                         contentDescription = "Kilit",
                         tint = if (isLocked) Color(0xFFEF5350) else Color.LightGray,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
 
-                if (item.type != com.example.parser.ItemType.LIVE || onInfoClick != null) {
-                    IconButton(
-                        onClick = {
-                            if (onInfoClick != null) {
-                                onInfoClick()
-                            } else {
-                                showInfoDialog = true
-                            }
-                        },
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = stringResource(R.string.info_button_desc),
-                            tint = Color.LightGray,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
+                IconButton(
+                    onClick = handleInfoClick,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .focusProperties { canFocus = false }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = stringResource(R.string.info_button_desc),
+                        tint = Color(0xFF29B6F6),
+                        modifier = Modifier.size(15.dp)
+                    )
                 }
             }
         }
     }
 
     if (showInfoDialog) {
-        ContentInfoDialog(
-            item = item,
-            onDismiss = { showInfoDialog = false },
-            onPlay = {
-                showInfoDialog = false
-                onClick()
-            }
-        )
+        if (item.type == com.example.parser.ItemType.LIVE) {
+            LiveEpgDialog(
+                channel = item,
+                onDismiss = { showInfoDialog = false },
+                onPlay = {
+                    showInfoDialog = false
+                    onClick()
+                }
+            )
+        } else {
+            ContentInfoDialog(
+                item = item,
+                onDismiss = { showInfoDialog = false },
+                onPlay = {
+                    showInfoDialog = false
+                    onClick()
+                }
+            )
+        }
     }
 }
 
@@ -661,15 +1379,19 @@ fun SeriesCard(
     item: M3uItem,
     episodeCount: Int,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     episodes: List<M3uItem> = emptyList(),
     onPlayEpisode: ((M3uItem) -> Unit)? = null,
     onInfoClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
-    val isFavorite = favoriteUrls.contains(item.url)
+    val favoriteSeriesNames by com.example.model.FavoritesManager.favoriteSeriesNames.collectAsState()
+    val isFavorite = com.example.model.FavoritesManager.isSeriesFavorite(item, episodes)
     val lockedChannels by com.example.model.ParentalControlManager.lockedChannels.collectAsState()
     val lockedGroups by com.example.model.ParentalControlManager.lockedGroups.collectAsState()
+    val explicitlyUnlockedChannels by com.example.model.ParentalControlManager.explicitlyUnlockedChannels.collectAsState()
     val explicitlyUnlockedGroups by com.example.model.ParentalControlManager.explicitlyUnlockedGroups.collectAsState()
     val sessionUnlockedGroups by com.example.model.ParentalControlManager.sessionUnlockedGroups.collectAsState()
     val hasPin = com.example.model.ParentalControlManager.pinCode.collectAsState().value != null
@@ -679,8 +1401,45 @@ fun SeriesCard(
     var logoLoadFailed by remember(item.logo) { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
 
+    val handleToggleFavorite = {
+        val added = com.example.model.FavoritesManager.toggleSeriesFavorite(item, episodes)
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (added) "Favorilere eklendi: $seriesName" else "Favorilerden çıkarıldı: $seriesName",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val handleToggleLock = {
+        val locked = com.example.model.ParentalControlManager.toggleChannelLock(
+            channelUrl = item.url,
+            title = seriesName,
+            group = item.group,
+            type = "SERIES"
+        )
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (locked) "Kilitlendi (Varsayılan PIN: 0000): $seriesName" else "Kilit kaldırıldı: $seriesName",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val handleInfoClick = {
+        if (onInfoClick != null) {
+            onInfoClick()
+        } else {
+            showInfoDialog = true
+        }
+    }
+
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .onFocusChanged { isFocused = it.isFocused }
             .then(
@@ -689,7 +1448,12 @@ fun SeriesCard(
                     .border(3.dp, RedPrimary, RoundedCornerShape(10.dp))
                 else Modifier
             )
-            .clickable(onClick = onClick),
+            .tvRemoteCardClickable(
+                onClick = onClick,
+                onLongClick = handleToggleFavorite,
+                onLockToggle = handleToggleLock,
+                onInfoClick = handleInfoClick
+            ),
         shape = RoundedCornerShape(10.dp),
         border = if (isFocused) BorderStroke(3.dp, RedPrimary) else null,
         colors = CardDefaults.cardColors(containerColor = if (isFocused) Color(0xFF262C3A) else Color(0xFF1B202A))
@@ -782,50 +1546,43 @@ fun SeriesCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
-                        onClick = { com.example.model.FavoritesManager.toggleFavorite(item.url) },
-                        modifier = Modifier.size(28.dp)
+                        onClick = handleToggleFavorite,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .focusProperties { canFocus = false }
                     ) {
                         Icon(
                             imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Favori",
                             tint = if (isFavorite) Color.Red else Color.LightGray,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
                     IconButton(
-                        onClick = {
-                            if (isLocked) {
-                                Toast.makeText(context, "Dizi kilidini kaldırmak için Ebeveyn Kontrolü menüsünü kullanın.", Toast.LENGTH_LONG).show()
-                            } else {
-                                com.example.model.ParentalControlManager.lockChannel(item.url, item.title, item.group, "SERIES")
-                                Toast.makeText(context, context.getString(R.string.parental_channel_locked), Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.size(28.dp)
+                        onClick = handleToggleLock,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .focusProperties { canFocus = false }
                     ) {
                         Icon(
                             imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
                             contentDescription = "Kilit",
                             tint = if (isLocked) Color(0xFFEF5350) else Color.LightGray,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
                     IconButton(
-                        onClick = {
-                            if (onInfoClick != null) {
-                                onInfoClick()
-                            } else {
-                                showInfoDialog = true
-                            }
-                        },
-                        modifier = Modifier.size(28.dp)
+                        onClick = handleInfoClick,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .focusProperties { canFocus = false }
                     ) {
                         Icon(
                             imageVector = Icons.Default.Info,
                             contentDescription = stringResource(R.string.info_button_desc),
-                            tint = Color.LightGray,
+                            tint = Color(0xFF29B6F6),
                             modifier = Modifier.size(15.dp)
                         )
                     }
@@ -857,8 +1614,21 @@ fun SeriesCard(
 @Composable
 fun ProgressCard(progress: com.example.model.db.PlaybackProgressEntity, onClick: () -> Unit) {
     val context = LocalContext.current
+    val view = LocalView.current
     var logoLoadFailed by remember(progress.logo) { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
+
+    val handleToggleFavorite = {
+        val added = com.example.model.FavoritesManager.toggleFavorite(progress.url)
+        try {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (_: Exception) {}
+        Toast.makeText(
+            context,
+            if (added) "Favorilere eklendi: ${progress.title}" else "Favorilerden çıkarıldı: ${progress.title}",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
 
     Card(
         modifier = Modifier
@@ -871,7 +1641,10 @@ fun ProgressCard(progress: com.example.model.db.PlaybackProgressEntity, onClick:
                     .border(3.dp, RedPrimary, RoundedCornerShape(8.dp))
                 else Modifier
             )
-            .clickable(onClick = onClick),
+            .tvRemoteCardClickable(
+                onClick = onClick,
+                onLongClick = handleToggleFavorite
+            ),
         shape = RoundedCornerShape(8.dp),
         border = if (isFocused) BorderStroke(3.dp, RedPrimary) else null,
         colors = CardDefaults.cardColors(containerColor = if (isFocused) Color(0xFF1B202A) else Color(0xFF080F19))
@@ -1768,32 +2541,53 @@ fun ContentInfoDialog(
                                 bottom = if (isLandscape) 6.dp else 12.dp
                             )
                     ) {
-                        // Top-left metadata row: Rating, Release Date, Runtime
+                        // Top-left metadata row: IMDb Badge, Rating, Release Date, Runtime
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
+                            Surface(
+                                color = Color(0xFF29B6F6).copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(4.dp),
+                                border = BorderStroke(1.dp, Color(0xFF29B6F6).copy(alpha = 0.7f))
+                            ) {
+                                Text(
+                                    text = if (isSeries) "📺 DİZİ (IMDb)" else "🎬 FİLM (IMDb)",
+                                    color = Color(0xFF29B6F6),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+
                             if (!ratingText.isNullOrBlank()) {
                                 Surface(
                                     color = Color(0xFFF5C518),
-                                    shape = RoundedCornerShape(6.dp)
+                                    shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
+                                        Text(
+                                            text = "IMDb",
+                                            color = Color.Black,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Black
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
                                         Icon(
                                             imageVector = Icons.Default.Star,
                                             contentDescription = null,
                                             tint = Color.Black,
-                                            modifier = Modifier.size(13.dp)
+                                            modifier = Modifier.size(12.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Spacer(modifier = Modifier.width(2.dp))
                                         Text(
                                             text = ratingText,
                                             color = Color.Black,
-                                            fontSize = 11.5.sp,
+                                            fontSize = 11.sp,
                                             fontWeight = FontWeight.ExtraBold
                                         )
                                     }

@@ -41,7 +41,93 @@ object EpgRepository {
         val expiryMs: Long
     )
 
+    private data class FullEpgCacheEntry(
+        val programs: List<EpgProgram>,
+        val expiryMs: Long
+    )
+
     private val cache = ConcurrentHashMap<String, CacheEntry>()
+    private val fullCache = ConcurrentHashMap<String, FullEpgCacheEntry>()
+
+    suspend fun getFullEpg(item: M3uItem): List<EpgProgram> = withContext(Dispatchers.IO) {
+        if (item.type != ItemType.LIVE) return@withContext emptyList()
+
+        val matcher = XTREAM_URL_PATTERN.matcher(item.url.trim())
+        if (!matcher.matches()) return@withContext emptyList()
+
+        val scheme = matcher.group(1) ?: return@withContext emptyList()
+        val hostWithPort = matcher.group(2) ?: return@withContext emptyList()
+        val username = matcher.group(3) ?: return@withContext emptyList()
+        val password = matcher.group(4) ?: return@withContext emptyList()
+        val streamId = matcher.group(5) ?: return@withContext emptyList()
+
+        val nowMs = System.currentTimeMillis()
+        val cached = fullCache[streamId]
+        if (cached != null && nowMs < cached.expiryMs) {
+            return@withContext cached.programs
+        }
+
+        try {
+            val url = "$scheme://$hostWithPort/player_api.php?username=$username&password=$password&action=get_short_epg&stream_id=$streamId&limit=10"
+            val request = Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return@withContext emptyList()
+            }
+
+            val body = response.body?.string() ?: return@withContext emptyList()
+            val jsonObj = JSONObject(body)
+            val listingsArray = jsonObj.optJSONArray("epg_listings") ?: return@withContext emptyList()
+
+            val programs = mutableListOf<EpgProgram>()
+            for (i in 0 until listingsArray.length()) {
+                val progObj = listingsArray.optJSONObject(i) ?: continue
+
+                val rawTitle = progObj.optString("title", "")
+                val decodedTitle = decodeBase64OrRaw(rawTitle)
+                if (decodedTitle.isNullOrBlank()) continue
+
+                val rawDesc = progObj.optString("description", "").takeIf { it.isNotBlank() }
+                val decodedDesc = decodeBase64OrRaw(rawDesc)
+
+                var startMs = 0L
+                var endMs = 0L
+
+                val startTs = progObj.optLong("start_timestamp", 0L).takeIf { it > 0 }
+                    ?: progObj.optString("start_timestamp").toLongOrNull() ?: 0L
+                val stopTs = progObj.optLong("stop_timestamp", 0L).takeIf { it > 0 }
+                    ?: progObj.optString("stop_timestamp").toLongOrNull() ?: 0L
+
+                if (startTs > 0L) startMs = startTs * 1000L
+                if (stopTs > 0L) endMs = stopTs * 1000L
+
+                if (startMs == 0L) {
+                    val startStr = progObj.optString("start", "")
+                    startMs = parseDateToMs(startStr)
+                }
+                if (endMs == 0L) {
+                    val endStr = progObj.optString("end", "")
+                    endMs = parseDateToMs(endStr)
+                }
+
+                programs.add(
+                    EpgProgram(
+                        title = decodedTitle,
+                        description = decodedDesc,
+                        startMs = startMs,
+                        endMs = endMs
+                    )
+                )
+            }
+
+            programs.sortBy { it.startMs }
+            val expiryMs = nowMs + 5 * 60 * 1000L
+            fullCache[streamId] = FullEpgCacheEntry(programs, expiryMs)
+            programs
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
 
     suspend fun getNowNext(item: M3uItem): Pair<EpgProgram?, EpgProgram?> = withContext(Dispatchers.IO) {
         if (item.type != ItemType.LIVE) return@withContext Pair(null, null)

@@ -163,12 +163,15 @@ fun PlayListsScreen(
     // Ticker değiştikçe veya ham tarihler değiştikçe formatlanan süreyi anlık yeniden hesapla
     LaunchedEffect(expirationTicker, playlists) {
         for (p in playlists) {
-            val raw = playlistRawExpireDates[p.hostUrl]
+            val pKey = "${p.id}"
+            val raw = playlistRawExpireDates[pKey]
+                ?: playlistRawExpireDates[p.hostUrl]
                 ?: com.example.model.XtreamCodesApi.playlistExpireDateCache["${p.hostUrl}:${p.username}"]
+                ?: OdooIntegrationManager.playlistExpireDateMap["${p.hostUrl}_${p.username}"]
                 ?: OdooIntegrationManager.playlistExpireDateMap[p.hostUrl]
                 ?: OdooIntegrationManager.playlistExpireDateMap[p.name]
             if (raw != null) {
-                playlistExpireDates[p.hostUrl] = com.example.model.XtreamCodesApi.formatDetailedExpiration(raw)
+                playlistExpireDates[pKey] = com.example.model.XtreamCodesApi.formatDetailedExpiration(raw)
             }
         }
     }
@@ -176,19 +179,21 @@ fun PlayListsScreen(
     LaunchedEffect(playlists) {
         withContext(Dispatchers.IO) {
             for (p in playlists) {
+                val pKey = "${p.id}"
                 val creds = com.example.model.XtreamCodesApi.extractCredentials(p.hostUrl)
                 val user = p.username.ifBlank { creds?.username.orEmpty() }
                 val pass = p.password.ifBlank { creds?.password.orEmpty() }
                 val host = p.hostUrl.ifBlank { creds?.hostUrl.orEmpty() }
 
                 val cached = com.example.model.XtreamCodesApi.playlistExpireDateCache["$host:$user"]
+                    ?: OdooIntegrationManager.playlistExpireDateMap["${p.hostUrl}_${p.username}"]
                     ?: OdooIntegrationManager.playlistExpireDateMap[p.hostUrl]
                     ?: OdooIntegrationManager.playlistExpireDateMap[p.name]
                 if (cached != null) {
                     val formatted = com.example.model.XtreamCodesApi.formatDetailedExpiration(cached)
                     withContext(Dispatchers.Main) {
-                        playlistRawExpireDates[p.hostUrl] = cached
-                        playlistExpireDates[p.hostUrl] = formatted
+                        playlistRawExpireDates[pKey] = cached
+                        playlistExpireDates[pKey] = formatted
                     }
                 }
 
@@ -196,7 +201,7 @@ fun PlayListsScreen(
                     val fetched = com.example.model.XtreamCodesApi.getPlaylistExpireDate(host, user, pass)
                     if (fetched != null) {
                         withContext(Dispatchers.Main) {
-                            playlistExpireDates[p.hostUrl] = fetched
+                            playlistExpireDates[pKey] = fetched
                         }
                     }
                 }
@@ -860,8 +865,10 @@ fun PlayListsScreen(
                             }
 
                             // Bitiş Tarihi Bilgisi (Çalma listesi ismi ile Play simgesi arasında)
-                            val specificExpire = playlistExpireDates[playlist.hostUrl]
-                                ?: OdooIntegrationManager.playlistExpireDateMap[playlist.hostUrl]?.let { com.example.model.XtreamCodesApi.formatDetailedExpiration(it) }
+                            val specificExpire = playlistExpireDates["${playlist.id}"]
+                                ?: playlistExpireDates[playlist.hostUrl]
+                                ?: OdooIntegrationManager.playlistExpireDateMap["${playlist.hostUrl}_${playlist.username}"]
+                                ?: OdooIntegrationManager.playlistExpireDateMap[playlist.hostUrl]
                                 ?: OdooIntegrationManager.playlistExpireDateMap[playlist.name]?.let { com.example.model.XtreamCodesApi.formatDetailedExpiration(it) }
                             val displayExpiry = when {
                                 !specificExpire.isNullOrBlank() -> specificExpire

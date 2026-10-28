@@ -304,11 +304,11 @@ fun PlayerScreen(
             .build()
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("VLC/3.0.18 LibVLC/3.0.18")
+            .setUserAgent("IPTVSmartersPro/3.1.5 (Linux; Android 12)")
             .setAllowCrossProtocolRedirects(true)
             .setKeepPostFor302Redirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(15000)
+            .setConnectTimeoutMs(20000)
+            .setReadTimeoutMs(20000)
             .setDefaultRequestProperties(
                 mapOf(
                     "Connection" to "keep-alive",
@@ -360,10 +360,12 @@ fun PlayerScreen(
     var retryCount by remember { mutableIntStateOf(0) }
     var liveRetryCount by remember { mutableIntStateOf(0) }
     var vodRetryCount by remember { mutableIntStateOf(0) }
+    var retryAttempt by remember { mutableIntStateOf(0) }
     var currentAttemptMimeType by remember { mutableStateOf<String?>(null) }
 
     fun playNoSignalVideo() {
         try {
+            retryAttempt = 0
             isShowingNoSignal = true
             isBuffering = false
             val cacheFile = java.io.File(context.cacheDir, "sinyal_yok_cached.mp4")
@@ -406,11 +408,13 @@ fun PlayerScreen(
         liveRetryCount = 0
         vodRetryCount = 0
         retryCount = 0
+        retryAttempt = 0
 
         val previousItem = playingItem
         if (previousItem != null && previousItem.url != item.url) {
             try {
                 saveItemProgress(previousItem, exoPlayer.currentPosition, exoPlayer.duration)
+                exoPlayer.stop()
             } catch (_: Exception) {}
         }
 
@@ -582,36 +586,52 @@ fun PlayerScreen(
                         error.cause is java.io.IOException ||
                         error.cause is androidx.media3.datasource.HttpDataSource.HttpDataSourceException
 
-                if (isLive && (isBehindLive || isNetworkOrIo) && liveRetryCount < 2) {
-                    liveRetryCount++
-                    scope.launch {
-                        delay(1500)
-                        if (isBehindLive) {
-                            exoPlayer.seekToDefaultPosition()
-                        }
-                        exoPlayer.prepare()
-                        exoPlayer.playWhenReady = true
-                    }
-                    return
-                }
-
-                // VOD / Movie / Series auto-retry on network disconnect, server timeout or socket drop
-                if (!isLive && (isNetworkOrIo || isBehindLive) && vodRetryCount < 3) {
-                    vodRetryCount++
-                    val currentPos = exoPlayer.currentPosition.coerceAtLeast(0L)
-                    val safePos = (currentPos - 2000L).coerceAtLeast(0L)
-                    scope.launch {
-                        delay(1200)
-                        try {
-                            if (current != null) {
-                                val retryItem = createMediaItem(current)
-                                exoPlayer.setMediaItem(retryItem, safePos)
+                if (isLive && (isBehindLive || isNetworkOrIo)) {
+                    if (liveRetryCount < 5) {
+                        liveRetryCount++
+                        retryAttempt = liveRetryCount
+                        scope.launch {
+                            delay(2000)
+                            if (!isShowingNoSignal && playingItem?.url == current?.url) {
+                                if (isBehindLive) {
+                                    exoPlayer.seekToDefaultPosition()
+                                }
                                 exoPlayer.prepare()
                                 exoPlayer.playWhenReady = true
                             }
-                        } catch (_: Exception) {}
+                        }
+                        return
+                    } else {
+                        retryAttempt = 0
+                        playNoSignalVideo()
+                        return
                     }
-                    return
+                }
+
+                // VOD / Movie / Series auto-retry on network disconnect, server timeout or socket drop
+                if (!isLive && (isNetworkOrIo || isBehindLive)) {
+                    if (vodRetryCount < 5) {
+                        vodRetryCount++
+                        retryAttempt = vodRetryCount
+                        val currentPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                        val safePos = (currentPos - 2000L).coerceAtLeast(0L)
+                        scope.launch {
+                            delay(1200)
+                            try {
+                                if (current != null && !isShowingNoSignal && playingItem?.url == current.url) {
+                                    val retryItem = createMediaItem(current)
+                                    exoPlayer.setMediaItem(retryItem, safePos)
+                                    exoPlayer.prepare()
+                                    exoPlayer.playWhenReady = true
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        return
+                    } else {
+                        retryAttempt = 0
+                        playNoSignalVideo()
+                        return
+                    }
                 }
 
                 // Extractor format fallback
@@ -644,6 +664,7 @@ fun PlayerScreen(
                 }
 
                 // Yayın olmayan veya çalışmayan kanal: sinyal-yok.mp4 oynat
+                retryAttempt = 0
                 playNoSignalVideo()
             }
 
@@ -654,6 +675,7 @@ fun PlayerScreen(
                     if (!isShowingNoSignal) {
                         liveRetryCount = 0
                         vodRetryCount = 0
+                        retryAttempt = 0
                     }
                     val targetResume = pendingResumePositionMs
                     if (targetResume > 0L && !isShowingNoSignal) {
@@ -665,7 +687,21 @@ fun PlayerScreen(
                 } else if (playbackState == Player.STATE_ENDED) {
                     val current = playingItem
                     if (current?.type == ItemType.LIVE && !isShowingNoSignal) {
-                        playNoSignalVideo()
+                        if (liveRetryCount < 5) {
+                            liveRetryCount++
+                            retryAttempt = liveRetryCount
+                            scope.launch {
+                                delay(1500)
+                                if (!isShowingNoSignal && playingItem?.url == current.url) {
+                                    exoPlayer.seekToDefaultPosition()
+                                    exoPlayer.prepare()
+                                    exoPlayer.playWhenReady = true
+                                }
+                            }
+                        } else {
+                            retryAttempt = 0
+                            playNoSignalVideo()
+                        }
                     } else if (current?.type == ItemType.MOVIE) {
                         // Film bittiğinde: sonraki filme otomatik geçiş yapılmaz, kontrol çubuğu görünür yapılır ve ilerleme sıfırlanır
                         saveItemProgress(current, 0L, durationMs, forceDb = true)
@@ -676,6 +712,11 @@ fun PlayerScreen(
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (playing && !isShowingNoSignal) {
+                    liveRetryCount = 0
+                    vodRetryCount = 0
+                    retryAttempt = 0
+                }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -728,10 +769,10 @@ fun PlayerScreen(
         val current = playingItem
         if (current != null && (current.type == ItemType.MOVIE || current.type == ItemType.SERIES)) {
             if (isBuffering && exoPlayer.playWhenReady) {
-                // Wait up to 7 seconds for standard buffer refill
-                delay(7000)
-                // If it is STILL buffering after 7s while playWhenReady is true, stream socket dropped
-                if (isBuffering && exoPlayer.playWhenReady && !exoPlayer.isPlaying) {
+                delay(6000)
+                while (isBuffering && exoPlayer.playWhenReady && !exoPlayer.isPlaying && vodRetryCount < 5) {
+                    vodRetryCount++
+                    retryAttempt = vodRetryCount
                     val currentPos = exoPlayer.currentPosition.coerceAtLeast(0L)
                     val safePos = (currentPos - 2000L).coerceAtLeast(0L)
                     try {
@@ -740,17 +781,33 @@ fun PlayerScreen(
                         exoPlayer.prepare()
                         exoPlayer.playWhenReady = true
                     } catch (_: Exception) {}
+                    delay(4000)
+                }
+                if (isBuffering && !exoPlayer.isPlaying && !isShowingNoSignal && vodRetryCount >= 5) {
+                    retryAttempt = 0
+                    playNoSignalVideo()
                 }
             }
         }
     }
 
-    // LIVE STREAM NO-SIGNAL WATCHDOG: If a live channel stays buffering for >8 seconds without playing, switch to sinyal-yok
+    // LIVE STREAM NO-SIGNAL WATCHDOG: If a live channel stays buffering, retry 5 times (1/5 ... 5/5) before switching to sinyal-yok
     LaunchedEffect(playingItem?.url, isBuffering, isShowingNoSignal) {
         val current = playingItem
         if (current != null && current.type == ItemType.LIVE && isBuffering && !isShowingNoSignal) {
-            delay(8000)
-            if (isBuffering && !exoPlayer.isPlaying && !isShowingNoSignal) {
+            delay(4000)
+            while (isBuffering && !exoPlayer.isPlaying && !isShowingNoSignal && liveRetryCount < 5) {
+                liveRetryCount++
+                retryAttempt = liveRetryCount
+                try {
+                    exoPlayer.seekToDefaultPosition()
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                } catch (_: Exception) {}
+                delay(4000)
+            }
+            if (isBuffering && !exoPlayer.isPlaying && !isShowingNoSignal && liveRetryCount >= 5) {
+                retryAttempt = 0
                 playNoSignalVideo()
             }
         }
@@ -1257,14 +1314,33 @@ fun PlayerScreen(
             )
 
             // Buffering progress indicator (centered)
-            if (isBuffering && !isShowingNoSignal) {
-                CircularProgressIndicator(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(52.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    strokeWidth = 4.dp
-                )
+            if ((isBuffering || retryAttempt > 0) && !isShowingNoSignal) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(52.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 4.dp
+                    )
+                    if (retryAttempt in 1..5) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.75f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "Yayın Bağlanıyor ($retryAttempt/5)",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             // Volume Indicator (Left)

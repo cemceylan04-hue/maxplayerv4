@@ -171,6 +171,10 @@ object ParentalControlManager {
     }
 
     fun lockChannel(channelUrl: String, title: String? = null, group: String? = null, type: String = "LIVE") {
+        if (_pinCode.value == null) {
+            _pinCode.value = DEFAULT_PIN
+            prefs.edit().putString(KEY_PIN, DEFAULT_PIN).apply()
+        }
         if (isAdultChannel(title, group, channelUrl)) {
             val currentUnlocked = _explicitlyUnlockedChannels.value.toMutableSet()
             currentUnlocked.remove(channelUrl)
@@ -256,11 +260,13 @@ object ParentalControlManager {
         return _lockedGroups.value.toList().sorted()
     }
 
-    fun toggleChannelLock(channelUrl: String, title: String? = null, group: String? = null) {
+    fun toggleChannelLock(channelUrl: String, title: String? = null, group: String? = null, type: String = "LIVE"): Boolean {
         if (_lockedChannels.value.contains(channelUrl) || isAdultChannel(title, group, channelUrl)) {
             unlockChannel(channelUrl)
+            return false
         } else {
-            lockChannel(channelUrl, title, group)
+            lockChannel(channelUrl, title, group, type)
+            return true
         }
     }
 
@@ -268,7 +274,6 @@ object ParentalControlManager {
         if (_explicitlyUnlockedChannels.value.contains(channelUrl)) return false
         if (!group.isNullOrBlank() && isGroupLocked(group)) return true
         if (isAdultChannel(title, group, channelUrl)) return true
-        if (_pinCode.value == null) return false
         return _lockedChannels.value.contains(channelUrl)
     }
     
@@ -276,7 +281,6 @@ object ParentalControlManager {
         if (_explicitlyUnlockedChannels.value.contains(item.url)) return false
         if (!item.group.isNullOrBlank() && isGroupLocked(item.group)) return true
         if (isAdultChannel(item.title, item.group, item.url)) return true
-        if (_pinCode.value == null) return false
         return _lockedChannels.value.contains(item.url)
     }
 

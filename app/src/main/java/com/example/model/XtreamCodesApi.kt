@@ -68,7 +68,7 @@ object XtreamCodesApi {
     fun isCurrentlyRateLimited(): Boolean = System.currentTimeMillis() < isRateLimitedUntil
 
     fun getCredsHash(creds: XtreamCredentials): String {
-        val key = "${creds.hostUrl.trim().lowercase()}:${creds.username.trim().lowercase()}"
+        val key = "${creds.hostUrl.trim().lowercase()}:${creds.username.trim().lowercase()}:${creds.password.trim()}"
         return try {
             val md = java.security.MessageDigest.getInstance("MD5")
             md.digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -225,9 +225,19 @@ object XtreamCodesApi {
                 val playlists = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
                     db.iptvDao().getAllPlaylistsSync()
                 }
+                // Match with highest precision: username + password match, or full URL match, or username match
                 val matching = playlists.firstOrNull { p ->
                     p.username.isNotBlank() && p.password.isNotBlank() &&
-                    (clean.contains(p.username, ignoreCase = true) || clean.contains(p.hostUrl, ignoreCase = true) || p.hostUrl.contains(clean, ignoreCase = true))
+                    clean.contains(p.username, ignoreCase = true) && clean.contains(p.password, ignoreCase = true)
+                } ?: playlists.firstOrNull { p ->
+                    p.username.isNotBlank() && p.password.isNotBlank() &&
+                    clean.contains(p.username, ignoreCase = true)
+                } ?: playlists.firstOrNull { p ->
+                    val fullUrl = PlaylistRepository.buildPlaylistUrl(p.hostUrl, p.username, p.password)
+                    clean.equals(fullUrl, ignoreCase = true)
+                } ?: playlists.firstOrNull { p ->
+                    p.username.isNotBlank() && p.password.isNotBlank() &&
+                    p.hostUrl.trim().trimEnd('/').equals(clean.trim().trimEnd('/'), ignoreCase = true)
                 }
 
                 if (matching != null) {
@@ -251,29 +261,35 @@ object XtreamCodesApi {
     }
 
     private fun httpGet(url: String): String? {
-        if (isCurrentlyRateLimited()) {
-            return null
-        }
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", "IPTVSmartersPro/3.1.5 (Linux; Android 12)")
             .header("Accept", "*/*")
             .header("Connection", "keep-alive")
             .build()
-        return try {
-            val response = client.newCall(request).execute()
-            if (response.code == 429 || response.code == 503) {
-                // Server rate limit triggered: back off for 4 seconds
-                isRateLimitedUntil = System.currentTimeMillis() + 4_000L
-                null
-            } else if (response.isSuccessful) {
-                response.body?.string()
-            } else {
-                null
+        for (attempt in 0..1) {
+            try {
+                val response = client.newCall(request).execute()
+                if (response.code == 429 || response.code == 503) {
+                    if (attempt == 0) {
+                        try { Thread.sleep(600) } catch (_: Exception) {}
+                        continue
+                    }
+                    return null
+                } else if (response.isSuccessful) {
+                    return response.body?.string()
+                } else {
+                    return null
+                }
+            } catch (e: Exception) {
+                if (attempt == 0) {
+                    try { Thread.sleep(400) } catch (_: Exception) {}
+                    continue
+                }
+                return null
             }
-        } catch (e: Exception) {
-            null
         }
+        return null
     }
 
     suspend fun getCategories(creds: XtreamCredentials, type: ItemType): List<XtreamCategory> = withContext(Dispatchers.IO) {

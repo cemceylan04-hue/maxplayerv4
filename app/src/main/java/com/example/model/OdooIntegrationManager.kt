@@ -527,18 +527,28 @@ object OdooIntegrationManager {
             when (fetchResult) {
                 is PlaylistFetchResult.Success -> {
                     val odooPlaylists = fetchResult.playlists
-                    val remoteUrls = odooPlaylists.map { it.hostUrl }.toSet()
 
-                    // Odoo başarılı şekilde liste döndürdü. Odoo'dan silinen veya boş dönen listeleri Room'dan temizle
+                    // Odoo başarılı şekilde liste döndürdü. Odoo'da artık bulunmayan listeleri Room'dan temizle
                     for (local in localPlaylists) {
-                        if (!remoteUrls.contains(local.hostUrl)) {
+                        val stillExistsInOdoo = odooPlaylists.any { remote ->
+                            isMatchingPlaylist(
+                                remote.hostUrl, remote.username, remote.password, remote.name,
+                                local.hostUrl, local.username, local.password, local.name
+                            )
+                        }
+                        if (!stillExistsInOdoo) {
                             db.iptvDao().deletePlaylist(local)
                         }
                     }
 
                     // Insert or update remote playlists from Odoo
                     for (p in odooPlaylists) {
-                        val existing = localPlaylists.find { it.hostUrl == p.hostUrl }
+                        val existing = localPlaylists.find { local ->
+                            isMatchingPlaylist(
+                                p.hostUrl, p.username, p.password, p.name,
+                                local.hostUrl, local.username, local.password, local.name
+                            )
+                        }
                         if (existing == null) {
                             val entity = PlaylistEntity(
                                 userId = effectiveUserId,
@@ -548,9 +558,10 @@ object OdooIntegrationManager {
                                 password = p.password
                             )
                             db.iptvDao().insertPlaylist(entity)
-                        } else if (existing.name != p.name || existing.username != p.username || existing.password != p.password) {
+                        } else if (existing.name != p.name || existing.username != p.username || existing.password != p.password || existing.hostUrl != p.hostUrl) {
                             val updated = existing.copy(
                                 name = p.name,
+                                hostUrl = p.hostUrl,
                                 username = p.username,
                                 password = p.password
                             )
@@ -589,6 +600,40 @@ object OdooIntegrationManager {
             _isSyncing.value = false
         }
         resultCount
+    }
+
+    fun normalizePlaylistHost(host: String): String {
+        return host.trim().trimEnd('/')
+            .substringBefore("/get.php")
+            .substringBefore("/player_api.php")
+            .substringBefore("/xmltv.php")
+            .substringBefore('?')
+            .lowercase(java.util.Locale.ROOT)
+    }
+
+    fun isMatchingPlaylist(
+        hostA: String, userA: String, passA: String, nameA: String,
+        hostB: String, userB: String, passB: String, nameB: String
+    ): Boolean {
+        val normA = normalizePlaylistHost(hostA)
+        val normB = normalizePlaylistHost(hostB)
+        val uA = userA.trim()
+        val uB = userB.trim()
+        val pA = passA.trim()
+        val pB = passB.trim()
+
+        // If both have usernames, they match only if host and username match!
+        if (uA.isNotBlank() && uB.isNotBlank()) {
+            return normA == normB && uA.equals(uB, ignoreCase = true) && (pA.isBlank() || pB.isBlank() || pA == pB)
+        }
+        // If neither has username (e.g. M3U files), match by host and playlist name
+        if (normA == normB) {
+            if (nameA.isNotBlank() && nameB.isNotBlank()) {
+                return nameA.trim().equals(nameB.trim(), ignoreCase = true)
+            }
+            return true
+        }
+        return false
     }
 
     /**
@@ -639,6 +684,10 @@ object OdooIntegrationManager {
                             item.optString("valid_until",
                                 item.optString("bitis_tarihi", "")))))).trim()
             if (itemExp.isNotBlank() && itemExp != "null") {
+                if (username.isNotBlank()) {
+                    playlistExpireDateMap["${hostUrl}_$username"] = itemExp
+                    playlistExpireDateMap["${name}_$username"] = itemExp
+                }
                 playlistExpireDateMap[hostUrl] = itemExp
                 if (name.isNotBlank()) playlistExpireDateMap[name] = itemExp
             }
