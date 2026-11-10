@@ -45,6 +45,7 @@ fun PlayerBottomBar(
     currentPositionMs: Long,
     durationMs: Long,
     hasSubtitles: Boolean,
+    hasMultipleAudioTracks: Boolean = false,
     epgNow: EpgProgram?,
     epgNext: EpgProgram?,
     epPrefix: String,
@@ -53,6 +54,7 @@ fun PlayerBottomBar(
     onSeekForwardClick: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onSubtitleClick: () -> Unit,
+    onAudioTrackClick: () -> Unit = {},
     onListClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onBarFocusChanged: (Boolean) -> Unit = {},
@@ -315,6 +317,16 @@ fun PlayerBottomBar(
                             contentDescription = stringResource(R.string.player_subtitles),
                             iconSize = 26.dp,
                             onClick = onSubtitleClick
+                        )
+                    }
+
+                    // Ses İzi butonu - Birden fazla ses izi varsa doğrudan hızlı erişim
+                    if (hasMultipleAudioTracks) {
+                        TvFocusableIconButton(
+                            icon = Icons.Default.Audiotrack,
+                            contentDescription = stringResource(R.string.player_audio_track),
+                            iconSize = 26.dp,
+                            onClick = onAudioTrackClick
                         )
                     }
 

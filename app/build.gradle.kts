@@ -18,8 +18,8 @@ android {
     applicationId = "com.maxxplayers.tvs"
     minSdk = 23
     targetSdk = 36
-    versionCode = 114
-    versionName = "1.1.4"
+    versionCode = 135
+    versionName = "1.3.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

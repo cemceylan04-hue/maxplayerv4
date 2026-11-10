@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
@@ -44,7 +45,8 @@ data class AudioTrackInfo(
     val groupIndex: Int,
     val trackIndex: Int,
     val label: String,
-    val isSelected: Boolean
+    val isSelected: Boolean,
+    val isSupported: Boolean = true
 )
 
 data class VideoTrackInfo(
@@ -150,14 +152,68 @@ fun PlayerSettingsSheet(
             if (group.type == C.TRACK_TYPE_AUDIO) {
                 for (tIdx in 0 until group.length) {
                     val format = group.getTrackFormat(tIdx)
-                    val lang = format.language?.uppercase()?.takeIf { it.isNotBlank() }
-                    val label = format.label?.takeIf { it.isNotBlank() } ?: lang ?: "Ses #$audioCounter"
+                    val isSupported = group.isTrackSupported(tIdx)
+
+                    val langCode = format.language?.lowercase()?.trim()
+                    val langName = when (langCode) {
+                        "tur", "tr", "turkish" -> "Türkçe"
+                        "eng", "en", "english" -> "İngilizce"
+                        "ger", "de", "german", "deu" -> "Almanca"
+                        "fra", "fr", "french" -> "Fransızca"
+                        "spa", "es", "spanish" -> "İspanyolca"
+                        "ita", "it", "italian" -> "İtalyanca"
+                        "rus", "ru", "russian" -> "Rusça"
+                        "ara", "ar", "arabic" -> "Arapça"
+                        "aze", "az", "azerbaijani" -> "Azerice"
+                        null, "", "und" -> null
+                        else -> format.language?.uppercase()
+                    }
+
+                    val channelText = when (format.channelCount) {
+                        1 -> "Mono"
+                        2 -> "Stereo"
+                        6 -> "5.1 Surround"
+                        8 -> "7.1 Surround"
+                        else -> if (format.channelCount > 0) "${format.channelCount} Kanal" else null
+                    }
+
+                    val codecText = when (format.sampleMimeType) {
+                        MimeTypes.AUDIO_AAC -> "AAC"
+                        MimeTypes.AUDIO_AC3 -> "Dolby AC3"
+                        MimeTypes.AUDIO_E_AC3 -> "Dolby E-AC3"
+                        MimeTypes.AUDIO_E_AC3_JOC -> "Dolby Atmos"
+                        MimeTypes.AUDIO_MPEG, MimeTypes.AUDIO_MPEG_L2 -> "MP3"
+                        MimeTypes.AUDIO_DTS -> "DTS"
+                        MimeTypes.AUDIO_DTS_HD -> "DTS-HD"
+                        MimeTypes.AUDIO_TRUEHD -> "TrueHD"
+                        MimeTypes.AUDIO_OPUS -> "Opus"
+                        MimeTypes.AUDIO_VORBIS -> "Vorbis"
+                        MimeTypes.AUDIO_FLAC -> "FLAC"
+                        else -> format.sampleMimeType?.substringAfter("audio/")?.uppercase()
+                    }
+
+                    val primaryName = format.label?.takeIf { it.isNotBlank() } ?: langName ?: "Ses #$audioCounter"
+                    val detailParts = mutableListOf<String>()
+                    if (format.label?.isNotBlank() == true && langName != null && !format.label.equals(langName, ignoreCase = true)) {
+                        detailParts.add(langName)
+                    }
+                    if (codecText != null) detailParts.add(codecText)
+                    if (channelText != null) detailParts.add(channelText)
+                    if (!isSupported) detailParts.add("Desteklenmiyor")
+
+                    val fullLabel = if (detailParts.isNotEmpty()) {
+                        "$primaryName (${detailParts.joinToString(" • ")})"
+                    } else {
+                        primaryName
+                    }
+
                     list.add(
                         AudioTrackInfo(
                             groupIndex = gIdx,
                             trackIndex = tIdx,
-                            label = label,
-                            isSelected = group.isTrackSelected(tIdx)
+                            label = fullLabel,
+                            isSelected = group.isTrackSelected(tIdx),
+                            isSupported = isSupported
                         )
                     )
                     audioCounter++
@@ -517,25 +573,37 @@ fun PlayerSettingsSheet(
                     }
 
                     "Ses İzi" -> {
-                        items(audioTracks.size) { idx ->
-                            val track = audioTracks[idx]
-                            TvSelectableItemRow(
-                                title = track.label,
-                                isSelected = track.isSelected,
-                                onClick = {
-                                    val group = tracksState.groups[track.groupIndex]
-                                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                                        .buildUpon()
-                                        .setOverrideForType(
-                                            TrackSelectionOverride(
-                                                group.mediaTrackGroup,
-                                                track.trackIndex
+                        if (audioTracks.isEmpty()) {
+                            item {
+                                Text(
+                                    text = stringResource(R.string.player_default_audio),
+                                    color = Color.Gray,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(16.dp)
+                                )
+                            }
+                        } else {
+                            items(audioTracks.size) { idx ->
+                                val track = audioTracks[idx]
+                                TvSelectableItemRow(
+                                    title = track.label,
+                                    isSelected = track.isSelected,
+                                    onClick = {
+                                        val group = tracksState.groups[track.groupIndex]
+                                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                            .buildUpon()
+                                            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                            .setOverrideForType(
+                                                TrackSelectionOverride(
+                                                    group.mediaTrackGroup,
+                                                    track.trackIndex
+                                                )
                                             )
-                                        )
-                                        .build()
-                                    selectedSubMenu = null
-                                }
-                            )
+                                            .build()
+                                        selectedSubMenu = null
+                                    }
+                                )
+                            }
                         }
                     }
 

@@ -49,17 +49,48 @@ object EpgRepository {
     private val cache = ConcurrentHashMap<String, CacheEntry>()
     private val fullCache = ConcurrentHashMap<String, FullEpgCacheEntry>()
 
+    private data class XtreamParams(
+        val scheme: String,
+        val hostWithPort: String,
+        val username: String,
+        val password: String,
+        val streamId: String
+    )
+
+    private fun extractXtreamParams(item: M3uItem): XtreamParams? {
+        val matcher = XTREAM_URL_PATTERN.matcher(item.url.trim())
+        if (matcher.matches()) {
+            val scheme = matcher.group(1) ?: return null
+            val hostWithPort = matcher.group(2) ?: return null
+            val username = matcher.group(3) ?: return null
+            val password = matcher.group(4) ?: return null
+            val streamId = matcher.group(5) ?: return null
+            return XtreamParams(scheme, hostWithPort, username, password, streamId)
+        }
+        val creds = PlaylistRepository.currentXtreamCredentials
+        if (creds != null) {
+            try {
+                val uri = java.net.URI.create(creds.hostUrl.trimEnd('/'))
+                val scheme = uri.scheme ?: "http"
+                val hostWithPort = uri.authority ?: return null
+                val sId = item.url.trim().substringBefore('?').substringAfterLast('/').substringBefore('.')
+                if (sId.isNotBlank()) {
+                    return XtreamParams(scheme, hostWithPort, creds.username, creds.password, sId)
+                }
+            } catch (_: Exception) {}
+        }
+        return null
+    }
+
     suspend fun getFullEpg(item: M3uItem): List<EpgProgram> = withContext(Dispatchers.IO) {
         if (item.type != ItemType.LIVE) return@withContext emptyList()
 
-        val matcher = XTREAM_URL_PATTERN.matcher(item.url.trim())
-        if (!matcher.matches()) return@withContext emptyList()
-
-        val scheme = matcher.group(1) ?: return@withContext emptyList()
-        val hostWithPort = matcher.group(2) ?: return@withContext emptyList()
-        val username = matcher.group(3) ?: return@withContext emptyList()
-        val password = matcher.group(4) ?: return@withContext emptyList()
-        val streamId = matcher.group(5) ?: return@withContext emptyList()
+        val params = extractXtreamParams(item) ?: return@withContext emptyList()
+        val scheme = params.scheme
+        val hostWithPort = params.hostWithPort
+        val username = params.username
+        val password = params.password
+        val streamId = params.streamId
 
         val nowMs = System.currentTimeMillis()
         val cached = fullCache[streamId]
@@ -132,14 +163,12 @@ object EpgRepository {
     suspend fun getNowNext(item: M3uItem): Pair<EpgProgram?, EpgProgram?> = withContext(Dispatchers.IO) {
         if (item.type != ItemType.LIVE) return@withContext Pair(null, null)
 
-        val matcher = XTREAM_URL_PATTERN.matcher(item.url.trim())
-        if (!matcher.matches()) return@withContext Pair(null, null)
-
-        val scheme = matcher.group(1) ?: return@withContext Pair(null, null)
-        val hostWithPort = matcher.group(2) ?: return@withContext Pair(null, null)
-        val username = matcher.group(3) ?: return@withContext Pair(null, null)
-        val password = matcher.group(4) ?: return@withContext Pair(null, null)
-        val streamId = matcher.group(5) ?: return@withContext Pair(null, null)
+        val params = extractXtreamParams(item) ?: return@withContext Pair(null, null)
+        val scheme = params.scheme
+        val hostWithPort = params.hostWithPort
+        val username = params.username
+        val password = params.password
+        val streamId = params.streamId
 
         val nowMs = System.currentTimeMillis()
         val cached = cache[streamId]

@@ -238,6 +238,8 @@ object XtreamCodesApi {
                 } ?: playlists.firstOrNull { p ->
                     p.username.isNotBlank() && p.password.isNotBlank() &&
                     p.hostUrl.trim().trimEnd('/').equals(clean.trim().trimEnd('/'), ignoreCase = true)
+                } ?: playlists.firstOrNull { p ->
+                    p.username.isNotBlank() && p.password.isNotBlank()
                 }
 
                 if (matching != null) {
@@ -584,7 +586,11 @@ object XtreamCodesApi {
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 val catId = obj.optString("category_id", obj.optInt("category_id", 0).toString()).trim()
-                val categoryName = categoryMap[catId]?.ifBlank { "Genel" } ?: "Genel"
+                val directCatName = obj.optString("category_name").trim().takeIf { it.isNotBlank() }
+                val categoryName = directCatName
+                    ?: categoryMap[catId]?.ifBlank { null }
+                    ?: categoryMap[catId.toIntOrNull()?.toString()]?.ifBlank { null }
+                    ?: "Genel"
 
                 when (type) {
                     ItemType.LIVE -> {

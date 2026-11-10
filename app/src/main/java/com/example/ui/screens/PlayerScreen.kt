@@ -69,6 +69,9 @@ import androidx.media3.datasource.RawResourceDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioCapabilities
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -135,6 +138,7 @@ fun PlayerScreen(
     var isBuffering by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var hasSubtitles by remember { mutableStateOf(false) }
+    var hasMultipleAudioTracks by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var pendingResumePositionMs by remember { mutableLongStateOf(0L) }
@@ -282,16 +286,36 @@ fun PlayerScreen(
 
     // Build ExoPlayer instance
     val exoPlayer = remember {
-        val renderersFactory = DefaultRenderersFactory(context)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-            .setEnableDecoderFallback(true)
-            .setEnableAudioTrackPlaybackParams(true)
+        val renderersFactory = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): AudioSink? {
+                return DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                    .build()
+            }
+        }.apply {
+            setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            setEnableDecoderFallback(true)
+            setEnableAudioTrackPlaybackParams(true)
+        }
 
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
                 buildUponParameters()
-                    .setExceedRendererCapabilitiesIfNecessary(true)
-                    .setExceedAudioConstraintsIfNecessary(true)
+                    .setPreferredAudioMimeTypes(
+                        MimeTypes.AUDIO_AAC,
+                        MimeTypes.AUDIO_MPEG,
+                        MimeTypes.AUDIO_E_AC3,
+                        MimeTypes.AUDIO_AC3
+                    )
+                    .setPreferredAudioLanguages("tur", "tr", "turkish", "eng", "en")
+                    .setExceedRendererCapabilitiesIfNecessary(false)
+                    .setExceedAudioConstraintsIfNecessary(false)
                     .setExceedVideoConstraintsIfNecessary(true)
                     .setAllowAudioMixedChannelCountAdaptiveness(true)
                     .setAllowAudioMixedSampleRateAdaptiveness(true)
@@ -423,6 +447,11 @@ fun PlayerScreen(
         PlayerRepository.currentPlaylist = actualList
         playingItem = item
         PlayerRepository.currentlyPlayingItem = item
+        if (item.type == ItemType.LIVE) {
+            PlayerRepository.lastPlayedLiveChannel = item
+            PlayerRepository.lastPlayedLiveChannelUrl = item.url
+            PlayerRepository.lastPlayedLiveChannelGroup = item.group
+        }
 
         if (item.url.isBlank()) {
             playNoSignalVideo()
@@ -663,6 +692,29 @@ fun PlayerScreen(
                     return
                 }
 
+                // Audio decoder or AudioTrack failure: try fallback audio track instead of stopping video
+                val isAudioError = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED
+
+                if (current != null && isAudioError) {
+                    val audioGroups = exoPlayer.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    val altTrack = audioGroups.flatMap { g -> (0 until g.length).map { t -> g to t } }
+                        .firstOrNull { (g, t) -> !g.isTrackSelected(t) && g.isTrackSupported(t) }
+
+                    if (altTrack != null) {
+                        val (g, t) = altTrack
+                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                            .buildUpon()
+                            .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, t))
+                            .build()
+                        exoPlayer.prepare()
+                        exoPlayer.playWhenReady = true
+                        return
+                    }
+                }
+
                 // Yayın olmayan veya çalışmayan kanal: sinyal-yok.mp4 oynat
                 retryAttempt = 0
                 playNoSignalVideo()
@@ -721,6 +773,93 @@ fun PlayerScreen(
 
             override fun onTracksChanged(tracks: Tracks) {
                 hasSubtitles = tracks.groups.any { it.type == C.TRACK_TYPE_TEXT }
+
+                val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                val totalAudioTrackCount = audioGroups.sumOf { it.length }
+                hasMultipleAudioTracks = totalAudioTrackCount > 1
+
+                if (audioGroups.isNotEmpty()) {
+                    var isSelectedAudioSupported = false
+                    var anyAudioSelected = false
+
+                    for (g in audioGroups) {
+                        for (t in 0 until g.length) {
+                            if (g.isTrackSelected(t)) {
+                                anyAudioSelected = true
+                                if (g.isTrackSupported(t)) {
+                                    isSelectedAudioSupported = true
+                                }
+                                break
+                            }
+                        }
+                        if (anyAudioSelected) break
+                    }
+
+                    // Seçili ses izi yoksa veya seçili olan cihaz tarafından desteklenmiyorsa en uygun desteklenen izi seç
+                    if (!anyAudioSelected || !isSelectedAudioSupported) {
+                        var bestGroup: Tracks.Group? = null
+                        var bestIdx: Int = -1
+
+                        // 1. Türkçe desteklenen iz
+                        for (g in audioGroups) {
+                            for (t in 0 until g.length) {
+                                if (g.isTrackSupported(t)) {
+                                    val lang = g.getTrackFormat(t).language?.lowercase() ?: ""
+                                    if (lang == "tur" || lang == "tr" || lang == "turkish") {
+                                        bestGroup = g
+                                        bestIdx = t
+                                        break
+                                    }
+                                }
+                            }
+                            if (bestGroup != null) break
+                        }
+
+                        // 2. AAC / MP3 desteklenen iz
+                        if (bestGroup == null) {
+                            for (g in audioGroups) {
+                                for (t in 0 until g.length) {
+                                    if (g.isTrackSupported(t)) {
+                                        val mime = g.getTrackFormat(t).sampleMimeType ?: ""
+                                        if (mime.contains("aac", ignoreCase = true) ||
+                                            mime.contains("mp4a", ignoreCase = true) ||
+                                            mime.contains("mpeg", ignoreCase = true)
+                                        ) {
+                                            bestGroup = g
+                                            bestIdx = t
+                                            break
+                                        }
+                                    }
+                                }
+                                if (bestGroup != null) break
+                            }
+                        }
+
+                        // 3. Herhangi bir desteklenen iz
+                        if (bestGroup == null) {
+                            for (g in audioGroups) {
+                                for (t in 0 until g.length) {
+                                    if (g.isTrackSupported(t)) {
+                                        bestGroup = g
+                                        bestIdx = t
+                                        break
+                                    }
+                                }
+                                if (bestGroup != null) break
+                            }
+                        }
+
+                        if (bestGroup != null && bestIdx >= 0) {
+                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                .buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                .setOverrideForType(
+                                    TrackSelectionOverride(bestGroup.mediaTrackGroup, bestIdx)
+                                )
+                                .build()
+                        }
+                    }
+                }
             }
         }
 
@@ -913,6 +1052,12 @@ fun PlayerScreen(
                     saveItemProgress(playingItem, exoPlayer.currentPosition, exoPlayer.duration, forceDb = true)
                 } catch (_: Exception) {}
             }
+            val currentItem = playingItem ?: PlayerRepository.currentlyPlayingItem
+            if (currentItem != null && currentItem.type == ItemType.LIVE) {
+                PlayerRepository.lastPlayedLiveChannel = currentItem
+                PlayerRepository.lastPlayedLiveChannelUrl = currentItem.url
+                PlayerRepository.lastPlayedLiveChannelGroup = currentItem.group
+            }
             PlayerRepository.currentlyPlayingItem = null
             try {
                 exoPlayer.playWhenReady = false
@@ -941,6 +1086,12 @@ fun PlayerScreen(
                 exoPlayer.stop()
                 exoPlayer.clearMediaItems()
             } catch (_: Exception) {}
+            val exitItem = playingItem ?: PlayerRepository.currentlyPlayingItem
+            if (exitItem != null && exitItem.type == ItemType.LIVE) {
+                PlayerRepository.lastPlayedLiveChannel = exitItem
+                PlayerRepository.lastPlayedLiveChannelUrl = exitItem.url
+                PlayerRepository.lastPlayedLiveChannelGroup = exitItem.group
+            }
             PlayerRepository.currentlyPlayingItem = null
             onBack()
         }
@@ -1104,6 +1255,12 @@ fun PlayerScreen(
                                 true
                             }
                         }
+                        AndroidKeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> {
+                            settingsInitialSubMenu = "Ses İzi"
+                            showSettingsSheet = true
+                            isControllerVisible = true
+                            true
+                        }
                         else -> false
                     }
                 } else {
@@ -1191,6 +1348,12 @@ fun PlayerScreen(
                                 focusBottomBar()
                                 true
                             }
+                        }
+                        AndroidKeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> {
+                            settingsInitialSubMenu = "Ses İzi"
+                            showSettingsSheet = true
+                            isControllerVisible = true
+                            true
                         }
                         else -> false
                     }
@@ -1420,6 +1583,7 @@ fun PlayerScreen(
                     currentPositionMs = currentPositionMs,
                     durationMs = durationMs,
                     hasSubtitles = hasSubtitles,
+                    hasMultipleAudioTracks = hasMultipleAudioTracks,
                     epgNow = epgNow,
                     epgNext = epgNext,
                     epPrefix = epPrefix,
@@ -1450,6 +1614,11 @@ fun PlayerScreen(
                     onSubtitleClick = {
                         lastInteractionTime = System.currentTimeMillis()
                         settingsInitialSubMenu = "Altyazılar"
+                        showSettingsSheet = true
+                    },
+                    onAudioTrackClick = {
+                        lastInteractionTime = System.currentTimeMillis()
+                        settingsInitialSubMenu = "Ses İzi"
                         showSettingsSheet = true
                     },
                     onListClick = {

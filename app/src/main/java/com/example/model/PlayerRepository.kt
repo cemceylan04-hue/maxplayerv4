@@ -24,6 +24,11 @@ object PlayerRepository {
     var lastDashboardSearchQuery: String = ""
     var lastSelectedSeries: List<M3uItem>? = null
 
+    // Son izlenen canlı kanalın durumunu ve konumunu saklama
+    var lastPlayedLiveChannel: M3uItem? = null
+    var lastPlayedLiveChannelUrl: String? = null
+    var lastPlayedLiveChannelGroup: String? = null
+
     fun clearForNewPlaylist() {
         currentlyPlayingItem = null
         currentPlaylist = emptyList()

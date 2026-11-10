@@ -34,6 +34,11 @@ object PlaylistRepository {
 
     private val _playlist = MutableStateFlow<List<M3uItem>>(emptyList())
     val playlist: StateFlow<List<M3uItem>> = _playlist
+
+    fun setPlaylistForTesting(items: List<M3uItem>) {
+        _playlist.value = items
+        clearPlaylistCaches()
+    }
     
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading
@@ -74,12 +79,26 @@ object PlaylistRepository {
     private val loadingCategories = java.util.concurrent.ConcurrentHashMap<Pair<com.example.parser.ItemType, String>, Boolean>()
     private val loadMutex = Mutex()
 
+    // 300.000+ içerik için anlık bellek önbelleği (Menü geçişlerinde 12 sn takılmayı tamamen yok eder)
+    private val groupItemsCache = java.util.concurrent.ConcurrentHashMap<Pair<com.example.parser.ItemType?, String>, List<M3uItem>>()
+    private val groupsByTypeCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+    private val groupCountsByTypeCache = java.util.concurrent.ConcurrentHashMap<com.example.parser.ItemType, Map<String, Int>>()
+    private val typeCountCache = java.util.concurrent.ConcurrentHashMap<com.example.parser.ItemType, Int>()
+
+    fun clearPlaylistCaches() {
+        groupItemsCache.clear()
+        groupsByTypeCache.clear()
+        groupCountsByTypeCache.clear()
+        typeCountCache.clear()
+    }
+
     fun prepareForNewPlaylist(context: Context, newUrl: String) {
         val cleanUrl = newUrl.trim()
         saveLastUsedPlaylistUrl(context, cleanUrl)
         currentLoadedUrl = null
         _currentPlaylistUrl.value = cleanUrl
         currentXtreamCredentials = null
+        clearPlaylistCaches()
         _playlist.value = emptyList()
         _knownGroups.value = emptyMap()
         _categoryLoadingStates.value = emptySet()
@@ -293,59 +312,39 @@ object PlaylistRepository {
 
             val cacheFile = getCacheFile(context, cleanUrl)
 
-            // Xtream Codes API Mode: player_api.php ile hızlı API entegrasyonu (buket sırasını korur)
+            // Xtream Codes API Mode: player_api.php ile hızlı API entegrasyonu (ÖNCE KATEGORİLERİ ÇEK)
             val parsedCreds = XtreamCodesApi.extractCredentials(cleanUrl, context)
             if (parsedCreds != null) {
                 currentXtreamCredentials = parsedCreds
                 _loadStep.value = PlaylistLoadStep.PROCESSING
-                _loadingDetail.value = "Kategoriler ve buketler API ile alınıyor..."
-                _loadingProgress.value = 25
+                _loadingDetail.value = "Kategoriler API ile anlık alınıyor..."
+                _loadingProgress.value = 35
 
-                // ANLIK LİSTE ÇEKME: Xtream Codes JSON API (buket sıralaması korunur)
                 try {
-                    _loadStep.value = PlaylistLoadStep.DOWNLOADING
-                    _loadingDetail.value = "Kategoriler ve yayınlar sunucudan alınıyor..."
-                    val previewResult = XtreamCodesApi.initializeCategoriesAndPreview(
-                        context = context,
-                        creds = currentXtreamCredentials!!,
-                        onStreamingBatch = { cats, partialItems, detail ->
-                            if (cats.values.any { it.isNotEmpty() }) {
-                                _knownGroups.value = cats
-                                saveKnownGroupsCache(context, cleanUrl, cats)
-                            }
-                            if (partialItems.isNotEmpty()) {
-                                _playlist.value = partialItems
-                                currentLoadedUrl = cleanUrl
-                                saveXtreamToM3uCache(context, cleanUrl, partialItems)
-                            }
-                            _isDialogDismissed.value = true
-                            _loadingDetail.value = detail
-                        }
+                    // 1. Önce Kategorileri API ile anlık çek (Kategoriler çok küçüktür, 200ms içinde gelir)
+                    val liveCats = XtreamCodesApi.getCategories(parsedCreds, com.example.parser.ItemType.LIVE)
+                    val vodCats = XtreamCodesApi.getCategories(parsedCreds, com.example.parser.ItemType.MOVIE)
+                    val seriesCats = XtreamCodesApi.getCategories(parsedCreds, com.example.parser.ItemType.SERIES)
+
+                    val categoriesMap = mapOf(
+                        com.example.parser.ItemType.LIVE to liveCats.map { it.categoryName },
+                        com.example.parser.ItemType.MOVIE to vodCats.map { it.categoryName },
+                        com.example.parser.ItemType.SERIES to seriesCats.map { it.categoryName }
                     )
-                    val hasCats = previewResult.categoriesByType.values.any { it.isNotEmpty() }
-                    val hasItems = previewResult.previewItems.isNotEmpty()
 
-                    if (hasCats || hasItems) {
-                        _knownGroups.value = previewResult.categoriesByType
-                        saveKnownGroupsCache(context, cleanUrl, previewResult.categoriesByType)
-
-                        _playlist.value = previewResult.previewItems
-                        if (hasItems) {
-                            saveXtreamToM3uCache(context, cleanUrl, previewResult.previewItems)
-                        }
-
-                        val liveCount = previewResult.previewItems.count { it.type == com.example.parser.ItemType.LIVE }
-                        val movieCount = previewResult.previewItems.count { it.type == com.example.parser.ItemType.MOVIE }
-                        val seriesCount = previewResult.previewItems.count { it.type == com.example.parser.ItemType.SERIES }
-                        val catCount = previewResult.categoriesByType.values.sumOf { it.size }
-                        android.util.Log.d("PlaylistFetch", "method=API, url=$cleanUrl, live=$liveCount, movies=$movieCount, series=$seriesCount, categories=$catCount")
-
+                    val totalCats = categoriesMap.values.sumOf { it.size }
+                    if (totalCats > 0) {
+                        _knownGroups.value = categoriesMap
+                        saveKnownGroupsCache(context, cleanUrl, categoriesMap)
                         currentLoadedUrl = cleanUrl
                         _isDialogDismissed.value = true
                         _loadStep.value = PlaylistLoadStep.COMPLETED
                         _loadingProgress.value = 100
-                        _loadingDetail.value = "$catCount kategori ve ${previewResult.previewItems.size} yayın hazır"
+                        _loadingDetail.value = "$totalCats kategori hazır"
                         _isLoading.value = false
+
+                        // 2. Kanal listesini arka planda çek (Kullanıcı bekletilmez, sistem asla kasmaz)
+                        startBackgroundCategorySync(context, parsedCreds)
                         return@withLock
                     }
                 } catch (e: Throwable) {
@@ -353,7 +352,6 @@ object PlaylistRepository {
                     e.printStackTrace()
                 }
 
-                // Xtream API boş döndüyse veya hata verdiyse M3U indirme akışına devam et
                 android.util.Log.d("PlaylistFetch", "method=M3U_FALLBACK, url=$cleanUrl, reason=API_returned_empty_or_failed")
             } else {
                 android.util.Log.d("PlaylistFetch", "method=M3U_FALLBACK, url=$cleanUrl, reason=No_Xtream_credentials_found")
@@ -493,6 +491,10 @@ object PlaylistRepository {
     }
     
     fun getGroups(type: com.example.parser.ItemType? = null): List<String> {
+        val cacheKey = type?.name ?: "__ALL__"
+        val cached = groupsByTypeCache[cacheKey]
+        if (cached != null) return cached
+
         val hidden = CategoryManager.hiddenCategories.value
         val known = if (type != null) {
             _knownGroups.value[type].orEmpty()
@@ -507,30 +509,120 @@ object PlaylistRepository {
         val plGroups = fromPlaylist.mapNotNull { it.group }.distinct()
         // API buket sıralamasını birebir koru (A-Z alfabetik sıralamayla bozulmaz)
         val combined = (known + plGroups).distinct()
-        return combined.filter { !hidden.contains(it) }
+        val result = combined.filter { !hidden.contains(it) }
+        groupsByTypeCache[cacheKey] = result
+        return result
     }
     
     fun getItemsForGroup(group: String?, type: com.example.parser.ItemType? = null): List<M3uItem> {
+        val cacheKey = type to (group ?: "__ALL__")
+        val cached = groupItemsCache[cacheKey]
+        if (cached != null) return cached
+
         val hidden = CategoryManager.hiddenCategories.value
-        var items = _playlist.value
-        if (type != null) {
-            items = items.filter { it.type == type }
+        val items = _playlist.value.filter { !hidden.contains(it.group) }
+        if (group == null) {
+            val res = if (type != null) items.filter { it.type == type } else items
+            groupItemsCache[cacheKey] = res
+            return res
         }
-        items = items.filter { !hidden.contains(it.group) }
-        return if (group == null) {
-            items
+        val cleanGroup = group.trim()
+        val cleanGroupNoSpace = cleanGroup.replace(" ", "")
+        val matchingGroup = items.filter { item ->
+            val g = item.group?.trim() ?: return@filter false
+            g.equals(cleanGroup, ignoreCase = true) ||
+            g.replace(" ", "").equals(cleanGroupNoSpace, ignoreCase = true)
+        }
+        val result = if (type != null) {
+            val matchingType = matchingGroup.filter { it.type == type }
+            if (matchingType.isNotEmpty()) matchingType else matchingGroup
         } else {
-            items.filter { it.group == group }
+            matchingGroup
         }
+        if (result.isNotEmpty()) {
+            groupItemsCache[cacheKey] = result
+        }
+        return result
+    }
+
+    fun getGroupCounts(type: com.example.parser.ItemType): Map<String, Int> {
+        val cached = groupCountsByTypeCache[type]
+        if (cached != null) return cached
+
+        val map = _playlist.value.asSequence()
+            .filter { it.type == type }
+            .groupingBy { it.group ?: "" }
+            .eachCount()
+
+        groupCountsByTypeCache[type] = map
+        return map
+    }
+
+    fun getTypeCount(type: com.example.parser.ItemType): Int {
+        val cached = typeCountCache[type]
+        if (cached != null) return cached
+        val count = _playlist.value.count { it.type == type }
+        typeCountCache[type] = count
+        return count
     }
 
     private var backgroundSyncJob: kotlinx.coroutines.Job? = null
 
+    fun appendStreamsToPlaylist(context: Context, effectiveUrl: String, newStreams: List<M3uItem>) {
+        if (newStreams.isEmpty()) return
+        val current = _playlist.value.toMutableList()
+        val existingUrls = current.map { it.url }.toSet()
+        val toAdd = newStreams.filter { !existingUrls.contains(it.url) }
+        if (toAdd.isNotEmpty()) {
+            current.addAll(toAdd)
+            clearPlaylistCaches()
+            _playlist.value = current
+            saveXtreamToM3uCache(context, effectiveUrl, current)
+        }
+    }
+
     fun startBackgroundCategorySync(context: Context, creds: XtreamCredentials) {
-        // Artık arka planda yüzlerce kategoriye seri istek atıp sunucudan geçici ban yemiyoruz.
-        // Tüm yayınlar initializeCategoriesAndPreview içinde tek seferde (bulk) güvenli çekiliyor.
         backgroundSyncJob?.cancel()
-        backgroundSyncJob = null
+        backgroundSyncJob = CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // 1. Önce Canlı TV'nin ilk birkaç kategorisinin kanallarını anında çek ki kullanıcı hemen izleyebilsin
+                val liveCats = XtreamCodesApi.getCategories(creds, com.example.parser.ItemType.LIVE)
+                for (cat in liveCats.take(3)) {
+                    val streams = XtreamCodesApi.getStreamsForCategory(creds, cat.categoryId, cat.categoryName, com.example.parser.ItemType.LIVE, context)
+                    if (streams.isNotEmpty()) {
+                        appendStreamsToPlaylist(context, currentLoadedUrl ?: "", streams)
+                    }
+                    kotlinx.coroutines.delay(100)
+                }
+
+                // 2. Ardından sunucuyu yormadan canlı yayınların tamamını çek
+                val liveCatsMap = liveCats.associate { it.categoryId to it.categoryName }
+                val liveStreams = XtreamCodesApi.getAllStreams(creds, com.example.parser.ItemType.LIVE, liveCatsMap, context)
+                if (liveStreams.isNotEmpty()) {
+                    appendStreamsToPlaylist(context, currentLoadedUrl ?: "", liveStreams)
+                }
+
+                kotlinx.coroutines.delay(300)
+                // 3. Film kategorilerini çek
+                val vodCats = XtreamCodesApi.getCategories(creds, com.example.parser.ItemType.MOVIE)
+                val vodCatsMap = vodCats.associate { it.categoryId to it.categoryName }
+                val vodStreams = XtreamCodesApi.getAllStreams(creds, com.example.parser.ItemType.MOVIE, vodCatsMap, context)
+                if (vodStreams.isNotEmpty()) {
+                    appendStreamsToPlaylist(context, currentLoadedUrl ?: "", vodStreams)
+                }
+
+                kotlinx.coroutines.delay(300)
+                // 4. Dizi kategorilerini çek
+                val seriesCats = XtreamCodesApi.getCategories(creds, com.example.parser.ItemType.SERIES)
+                val seriesCatsMap = seriesCats.associate { it.categoryId to it.categoryName }
+                val seriesStreams = XtreamCodesApi.getAllStreams(creds, com.example.parser.ItemType.SERIES, seriesCatsMap, context)
+                if (seriesStreams.isNotEmpty()) {
+                    appendStreamsToPlaylist(context, currentLoadedUrl ?: "", seriesStreams)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun saveXtreamToM3uCache(context: Context, url: String, items: List<M3uItem>) {
@@ -595,14 +687,7 @@ object PlaylistRepository {
                 val catsMap = cats.associate { it.categoryId to it.categoryName }
                 val streams = XtreamCodesApi.getAllStreams(xtreamCreds, type, catsMap, context)
                 if (streams.isNotEmpty()) {
-                    val current = _playlist.value.toMutableList()
-                    val existingUrls = current.map { it.url }.toSet()
-                    val newItems = streams.filter { !existingUrls.contains(it.url) }
-                    if (newItems.isNotEmpty()) {
-                        current.addAll(newItems)
-                        _playlist.value = current
-                        saveXtreamToM3uCache(context, currentLoadedUrl ?: "", current)
-                    }
+                    appendStreamsToPlaylist(context, currentLoadedUrl ?: "", streams)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -613,12 +698,22 @@ object PlaylistRepository {
     }
 
     suspend fun ensureCategoryLoaded(context: Context, groupName: String?, type: com.example.parser.ItemType) {
-        if (groupName == null) return
-        val xtreamCreds = currentXtreamCredentials ?: XtreamCodesApi.extractCredentials(currentLoadedUrl ?: "", context) ?: return
+        if (groupName == null || groupName == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) return
+        val effectiveUrl = currentLoadedUrl?.takeIf { it.isNotBlank() }
+            ?: _currentPlaylistUrl.value?.takeIf { it.isNotBlank() }
+            ?: getLastUsedPlaylistUrl(context)
+            ?: ""
+        val xtreamCreds = currentXtreamCredentials
+            ?: XtreamCodesApi.extractCredentials(effectiveUrl, context)
+            ?: return
         val cacheKey = type to groupName
         if (loadingCategories[cacheKey] == true) return
 
-        val alreadyLoaded = _playlist.value.any { it.type == type && it.group == groupName }
+        val cleanGroupName = groupName.trim()
+        val alreadyLoaded = _playlist.value.any {
+            val g = it.group?.trim() ?: ""
+            g.equals(cleanGroupName, ignoreCase = true) || g.replace(" ", "").equals(cleanGroupName.replace(" ", ""), ignoreCase = true)
+        }
         if (alreadyLoaded) return
 
         loadingCategories[cacheKey] = true
@@ -628,19 +723,34 @@ object PlaylistRepository {
                 var catId = XtreamCodesApi.getCategoryId(xtreamCreds, type, groupName)
                 if (catId == null) {
                     val cats = XtreamCodesApi.getCategories(xtreamCreds, type)
-                    catId = cats.find { it.categoryName == groupName }?.categoryId
+                    catId = cats.find {
+                        val c = it.categoryName.trim()
+                        c.equals(cleanGroupName, ignoreCase = true) || c.replace(" ", "").equals(cleanGroupName.replace(" ", ""), ignoreCase = true)
+                    }?.categoryId
                 }
-                if (catId != null) {
-                    val streams = XtreamCodesApi.getStreamsForCategory(xtreamCreds, catId, groupName, type, context)
-                    if (streams.isNotEmpty()) {
-                        val current = _playlist.value.toMutableList()
-                        val existingUrls = current.map { it.url }.toSet()
-                        val newItems = streams.filter { !existingUrls.contains(it.url) }
-                        if (newItems.isNotEmpty()) {
-                            current.addAll(newItems)
-                            _playlist.value = current
-                            saveXtreamToM3uCache(context, currentLoadedUrl ?: "", current)
+
+                var resolvedType = type
+                if (catId == null) {
+                    for (otherType in com.example.parser.ItemType.values()) {
+                        if (otherType != type) {
+                            val otherCats = XtreamCodesApi.getCategories(xtreamCreds, otherType)
+                            val found = otherCats.find {
+                                val c = it.categoryName.trim()
+                                c.equals(cleanGroupName, ignoreCase = true) || c.replace(" ", "").equals(cleanGroupName.replace(" ", ""), ignoreCase = true)
+                            }
+                            if (found != null) {
+                                catId = found.categoryId
+                                resolvedType = otherType
+                                break
+                            }
                         }
+                    }
+                }
+
+                if (catId != null) {
+                    val streams = XtreamCodesApi.getStreamsForCategory(xtreamCreds, catId, groupName, resolvedType, context)
+                    if (streams.isNotEmpty()) {
+                        appendStreamsToPlaylist(context, effectiveUrl, streams)
                     }
                 }
             } catch (e: Exception) {

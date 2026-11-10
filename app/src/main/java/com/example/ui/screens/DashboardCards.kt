@@ -35,6 +35,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -162,7 +163,7 @@ fun Modifier.tvRemoteCardClickable(
                         keyDownTime = System.currentTimeMillis()
                         longPressJob?.cancel()
                         longPressJob = coroutineScope.launch {
-                            delay(350L)
+                            delay(600L)
                             if (!isLongPressHandled) {
                                 isLongPressHandled = true
                                 onLongClick()
@@ -186,7 +187,7 @@ fun Modifier.tvRemoteCardClickable(
                     val pressDuration = if (keyDownTime > 0) System.currentTimeMillis() - keyDownTime else 0L
                     keyDownTime = 0L
 
-                    if (isLongPressHandled || pressDuration >= 350L) {
+                    if (isLongPressHandled || pressDuration >= 600L) {
                         if (!isLongPressHandled) {
                             isLongPressHandled = true
                             onLongClick()
@@ -195,8 +196,9 @@ fun Modifier.tvRemoteCardClickable(
                         // CONSUME KeyUp so clickable / combinedClickable DOES NOT trigger onClick!
                         return@onPreviewKeyEvent true
                     }
-                    // Short press: let clickable / combinedClickable handle normal click
-                    return@onPreviewKeyEvent false
+                    // Short press on Android TV: directly invoke onClick() and consume KeyUp for rock-solid reliability
+                    onClick()
+                    return@onPreviewKeyEvent true
                 }
             }
             false
@@ -211,6 +213,7 @@ fun Modifier.tvRemoteCardClickable(
 fun HeroBanner(
     item: M3uItem,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     onInfoClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -272,7 +275,7 @@ fun HeroBanner(
     }
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(208.dp)
             .onFocusChanged { isFocused = it.isFocused }
@@ -1632,21 +1635,21 @@ fun ProgressCard(progress: com.example.model.db.PlaybackProgressEntity, onClick:
 
     Card(
         modifier = Modifier
-            .width(160.dp)
-            .height(90.dp)
+            .width(180.dp)
+            .height(100.dp)
             .onFocusChanged { isFocused = it.isFocused }
             .then(
                 if (isFocused) Modifier
-                    .scale(1.05f)
-                    .border(3.dp, RedPrimary, RoundedCornerShape(8.dp))
+                    .scale(1.06f)
+                    .border(3.dp, RedPrimary, RoundedCornerShape(10.dp))
                 else Modifier
             )
             .tvRemoteCardClickable(
                 onClick = onClick,
                 onLongClick = handleToggleFavorite
             ),
-        shape = RoundedCornerShape(8.dp),
-        border = if (isFocused) BorderStroke(3.dp, RedPrimary) else null,
+        shape = RoundedCornerShape(10.dp),
+        border = if (isFocused) BorderStroke(3.dp, RedPrimary) else BorderStroke(1.dp, Color(0xFF1E2638)),
         colors = CardDefaults.cardColors(containerColor = if (isFocused) Color(0xFF1B202A) else Color(0xFF080F19))
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1673,12 +1676,45 @@ fun ProgressCard(progress: com.example.model.db.PlaybackProgressEntity, onClick:
                     contentScale = ContentScale.Fit
                 )
             }
+
+            // Dark gradient overlay for contrast
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = if (isFocused) 0.65f else 0.85f)
+                            )
+                        )
+                    )
+            )
+
+            // Play icon overlay when focused
+            if (isFocused) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(RedPrimary.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Oynat",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.8f))
-                    .padding(6.dp)
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -1692,10 +1728,10 @@ fun ProgressCard(progress: com.example.model.db.PlaybackProgressEntity, onClick:
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     LinearProgressIndicator(
-                        progress = { if (progress.durationMs > 0) (progress.positionMs.toFloat() / progress.durationMs.toFloat()) else 0f },
+                        progress = { if (progress.durationMs > 0) (progress.positionMs.toFloat() / progress.durationMs.toFloat()).coerceIn(0f, 1f) else 0f },
                         modifier = Modifier.fillMaxWidth().height(3.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = Color.DarkGray
+                        color = RedPrimary,
+                        trackColor = Color(0xFF333333)
                     )
                 }
             }

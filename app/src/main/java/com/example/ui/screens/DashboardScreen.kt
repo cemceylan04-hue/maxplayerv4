@@ -93,6 +93,11 @@ fun DashboardScreen(
     val playWithPlaylist: (M3uItem, List<M3uItem>) -> Unit = { item, playlist ->
         com.example.model.PlayerRepository.currentPlaylist = playlist
         com.example.model.PlayerRepository.isFavoritesPlaylist = (selectedTabIndex == 4 && item.type != ItemType.SERIES)
+        if (item.type == ItemType.LIVE || selectedTabIndex == 1) {
+            com.example.model.PlayerRepository.lastPlayedLiveChannel = item
+            com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = item.url
+            com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = item.group
+        }
         onPlayStream(item)
     }
 
@@ -380,27 +385,31 @@ fun DashboardScreen(
     val typeLoadingStates by PlaylistRepository.typeLoadingStates.collectAsState()
     val isAdBannerEnabled by com.example.model.AdBannerManager.isBannerEnabled.collectAsState()
 
-    val displayGroups = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles, knownGroupsMap) {
+    val displayGroups = remember(currentType, selectedTabIndex, knownGroupsMap, favoriteUrls.size, favoriteSeriesNames.size, favoriteMovieTitles.size) {
         when {
             currentType != null -> {
                 val regularGroups = PlaylistRepository.getGroups(currentType)
                 listOf(com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) + regularGroups
             }
             selectedTabIndex == 4 -> {
-                val allBouquet = PlaylistRepository.getGroups()
-                val favGroupSet = visibleItems
-                    .filter {
-                        when (it.type) {
-                            ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
-                            ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
-                            ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                if (favoriteUrls.isEmpty() && favoriteSeriesNames.isEmpty() && favoriteMovieTitles.isEmpty()) {
+                    emptyList()
+                } else {
+                    val allBouquet = PlaylistRepository.getGroups()
+                    val favGroupSet = visibleItems
+                        .filter {
+                            when (it.type) {
+                                ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
+                                ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
+                                ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                            }
                         }
-                    }
-                    .mapNotNull { it.group?.takeIf { g -> g.isNotBlank() } }
-                    .toSet()
-                val orderedFav = allBouquet.filter { favGroupSet.contains(it) }
-                val remaining = favGroupSet.filter { !allBouquet.contains(it) }
-                (orderedFav + remaining).distinct()
+                        .mapNotNull { it.group?.takeIf { g -> g.isNotBlank() } }
+                        .toSet()
+                    val orderedFav = allBouquet.filter { favGroupSet.contains(it) }
+                    val remaining = favGroupSet.filter { !allBouquet.contains(it) }
+                    (orderedFav + remaining).distinct()
+                }
             }
             else -> emptyList()
         }
@@ -441,9 +450,17 @@ fun DashboardScreen(
             com.example.model.PlayerRepository.clearForNewPlaylist()
         }
     }
+    LaunchedEffect(selectedTabIndex) {
+        com.example.model.ParentalControlManager.lockAllSessionCategories()
+    }
     LaunchedEffect(displayGroups, selectedTabIndex) {
         if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
-            val saved = com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex]
+            val liveGroup = com.example.model.PlayerRepository.lastPlayedLiveChannelGroup
+            val saved = if (selectedTabIndex == 1 && !liveGroup.isNullOrBlank() && displayGroups.contains(liveGroup)) {
+                liveGroup
+            } else {
+                com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex]
+            }
             if (saved != null && displayGroups.contains(saved)) {
                 selectedGroup = saved
             } else if (selectedGroup == null || !displayGroups.contains(selectedGroup)) {
@@ -547,7 +564,7 @@ fun DashboardScreen(
                         it.type == ItemType.LIVE &&
                             com.example.model.FavoritesManager.isFavorite(it.url) &&
                             it.title.contains(searchQuery, ignoreCase = true)
-                    }
+                    }.distinctBy { it.url.ifBlank { it.title } }
                 } else {
                     PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.LIVE).filter {
                         it.title.contains(searchQuery, ignoreCase = true)
@@ -560,7 +577,7 @@ fun DashboardScreen(
                         it.type == ItemType.MOVIE &&
                             com.example.model.FavoritesManager.isMovieFavorite(it) &&
                             it.title.contains(searchQuery, ignoreCase = true)
-                    }
+                    }.distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
                 } else {
                     PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.MOVIE).filter {
                         it.title.contains(searchQuery, ignoreCase = true)
@@ -581,62 +598,54 @@ fun DashboardScreen(
                 }
             }
             4 -> {
-                visibleItems.filter {
-                    val isFav = when (it.type) {
-                        ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
-                        ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
-                        ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                if (favoriteUrls.isEmpty() && favoriteSeriesNames.isEmpty() && favoriteMovieTitles.isEmpty()) {
+                    emptyList()
+                } else {
+                    val favList = visibleItems.filter {
+                        val isFav = when (it.type) {
+                            ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
+                            ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
+                            ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
+                        }
+                        isFav &&
+                            (it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true))
                     }
-                    isFav &&
-                        (selectedGroup == null || it.group == selectedGroup) &&
-                        (it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true))
+                    val favLiveDistinct = favList.filter { it.type == ItemType.LIVE }
+                        .distinctBy { it.url.ifBlank { it.title } }
+                    val favMovieDistinct = favList.filter { it.type == ItemType.MOVIE }
+                        .distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
+                    val favSeriesList = favList.filter { it.type == ItemType.SERIES }
+                    favLiveDistinct + favMovieDistinct + favSeriesList
                 }
             }
             else -> emptyList()
         }
     }
 
-    val groupCounts = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles) {
+    val groupCounts = remember(currentType, selectedTabIndex, favoriteUrls.size, favoriteSeriesNames.size, favoriteMovieTitles.size) {
         when {
             currentType != null -> {
-                val map = visibleItems.asSequence().filter { it.type == currentType }
-                    .groupingBy { it.group ?: "" }
-                    .eachCount()
-                    .toMutableMap()
+                val baseMap = PlaylistRepository.getGroupCounts(currentType).toMutableMap()
                 val favCount = when (currentType) {
-                    ItemType.LIVE -> visibleItems.count { it.type == ItemType.LIVE && com.example.model.FavoritesManager.isFavorite(it.url) }
-                    ItemType.MOVIE -> visibleItems.count { it.type == ItemType.MOVIE && com.example.model.FavoritesManager.isMovieFavorite(it) }
-                    ItemType.SERIES -> visibleItems.filter { it.type == ItemType.SERIES && com.example.model.FavoritesManager.isSeriesFavorite(it) }
-                        .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
-                        .size
+                    ItemType.LIVE -> favoriteUrls.size
+                    ItemType.MOVIE -> favoriteMovieTitles.size
+                    ItemType.SERIES -> favoriteSeriesNames.size
                 }
-                map[com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME] = favCount
-                map
+                baseMap[com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME] = favCount
+                baseMap
             }
             selectedTabIndex == 4 -> {
-                visibleItems.asSequence().filter {
-                    when (it.type) {
-                        ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
-                        ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
-                        ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
-                    }
-                }
-                .groupingBy { it.group ?: "" }
-                .eachCount()
+                currentTabItems.asSequence()
+                    .groupingBy { it.group ?: "" }
+                    .eachCount()
             }
             else -> emptyMap()
         }
     }
-    val totalTypeCount = remember(visibleItems, currentType, selectedTabIndex, favoriteUrls, favoriteSeriesNames, favoriteMovieTitles) {
+    val totalTypeCount = remember(currentType, selectedTabIndex, favoriteUrls.size, favoriteSeriesNames.size, favoriteMovieTitles.size) {
         when {
-            currentType != null -> visibleItems.count { it.type == currentType }
-            selectedTabIndex == 4 -> visibleItems.count {
-                when (it.type) {
-                    ItemType.SERIES -> com.example.model.FavoritesManager.isSeriesFavorite(it)
-                    ItemType.MOVIE -> com.example.model.FavoritesManager.isMovieFavorite(it)
-                    ItemType.LIVE -> com.example.model.FavoritesManager.isFavorite(it.url)
-                }
-            }
+            currentType != null -> PlaylistRepository.getTypeCount(currentType)
+            selectedTabIndex == 4 -> favoriteUrls.size + favoriteMovieTitles.size + favoriteSeriesNames.size
             else -> 0
         }
     }
@@ -699,6 +708,7 @@ fun DashboardScreen(
                 val grp = sidePanelGroupToUnlock
                 sidePanelGroupToUnlock = null
                 if (grp != null) {
+                    com.example.model.ParentalControlManager.unlockCategoryTemporarily(grp)
                     selectedGroup = grp
                 }
             },
@@ -709,21 +719,38 @@ fun DashboardScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
-            contentWindowInsets = WindowInsets(0, 0, 0, 0)
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            bottomBar = {
+                TvRemoteColorButtonsFooter(
+                    isLandscape = isLandscape,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         ) { paddingValues ->
         Column(
             modifier = Modifier
                 .padding(paddingValues)
                 .fillMaxSize()
-                .padding(top = 15.dp, bottom = 15.dp)
+                .padding(top = 10.dp, bottom = 0.dp)
         ) {
     val actionsMenuContent = @Composable {
-                IconButton(onClick = { isSearchExpanded = !isSearchExpanded }, modifier = Modifier.size(42.dp)) {
+                if (selectedTabIndex != 0) {
+                    IconButton(onClick = { isSearchExpanded = !isSearchExpanded }, modifier = Modifier.size(42.dp)) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = stringResource(R.string.search_placeholder),
+                            tint = if (isSearchExpanded) MaterialTheme.colorScheme.primary else Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
+                IconButton(onClick = { showProfileSheet = true }, modifier = Modifier.size(42.dp)) {
                     Icon(
-                        Icons.Default.Search,
-                        contentDescription = stringResource(R.string.search_placeholder),
-                        tint = if (isSearchExpanded) MaterialTheme.colorScheme.primary else Color.White,
-                        modifier = Modifier.size(22.dp)
+                        Icons.Default.AccountCircle,
+                        contentDescription = stringResource(R.string.profile_desc),
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
 
@@ -1088,18 +1115,25 @@ fun DashboardScreen(
             }
 
             // Search Bar, Favorite Sub-Category Tabs & Category Filter Trigger
-            val favMoviesTotal = remember(currentTabItems) { currentTabItems.count { it.type == ItemType.MOVIE } }
+            val favMoviesTotal = remember(currentTabItems) {
+                currentTabItems.filter { it.type == ItemType.MOVIE }
+                    .distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
+                    .size
+            }
             val favSeriesTotal = remember(currentTabItems) {
                 currentTabItems.filter { it.type == ItemType.SERIES }
                     .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
                     .size
             }
-            val favLiveTotal = remember(currentTabItems) { currentTabItems.count { it.type == ItemType.LIVE } }
+            val favLiveTotal = remember(currentTabItems) {
+                currentTabItems.filter { it.type == ItemType.LIVE }
+                    .distinctBy { it.url.ifBlank { it.title } }
+                    .size
+            }
             val favTotalCount = favMoviesTotal + favSeriesTotal + favLiveTotal
 
             AnimatedVisibility(
                 visible = isSearchExpanded ||
-                    (selectedTabIndex == 4 && (currentTabItems.isNotEmpty() || selectedGroup != null || searchQuery.isNotEmpty())) ||
                     (!isLandscape && selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) ||
                     (isLandscape && selectedTabIndex in 2..3 && isMediaDataRefreshing)
             ) {
@@ -1127,61 +1161,6 @@ fun DashboardScreen(
                                 shape = RoundedCornerShape(20.dp),
                                 singleLine = true
                             )
-                        } else if (selectedTabIndex == 4) {
-                            Row(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .horizontalScroll(rememberScrollState()),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val favTabs = listOf(
-                                    Triple(0, "${stringResource(R.string.timeframe_all)} ($favTotalCount)", Icons.Default.Favorite),
-                                    Triple(1, "${stringResource(R.string.fav_section_live)} ($favLiveTotal)", Icons.Default.LiveTv),
-                                    Triple(2, "${stringResource(R.string.fav_section_movies)} ($favMoviesTotal)", Icons.Default.Movie),
-                                    Triple(3, "${stringResource(R.string.fav_section_series)} ($favSeriesTotal)", Icons.Default.Tv)
-                                )
-                                favTabs.forEach { (filterIdx, label, icon) ->
-                                    val isFilterSelected = selectedFavoriteFilter == filterIdx
-                                    val accentColor = when (filterIdx) {
-                                        1 -> Color(0xFF42A5F5)
-                                        2 -> Color(0xFFE50914)
-                                        3 -> Color(0xFFFFB300)
-                                        else -> MaterialTheme.colorScheme.primary
-                                    }
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isFilterSelected) accentColor.copy(alpha = 0.22f) else Color(0xFF1A1F2B),
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (isFilterSelected) accentColor else Color(0xFF2D3548)
-                                        ),
-                                        modifier = Modifier
-                                            .height(36.dp)
-                                            .clickable { selectedFavoriteFilter = filterIdx }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = icon,
-                                                contentDescription = null,
-                                                tint = if (isFilterSelected) accentColor else Color(0xFFB0BEC5),
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = label,
-                                                color = if (isFilterSelected) Color.White else Color(0xFFCFD8DC),
-                                                fontSize = 12.sp,
-                                                fontWeight = if (isFilterSelected) FontWeight.Bold else FontWeight.Medium,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
-                                }
-                            }
                         } else {
                             Spacer(modifier = Modifier.weight(1f))
                         }
@@ -1236,63 +1215,6 @@ fun DashboardScreen(
                         }
                     }
 
-                    if (isSearchExpanded && selectedTabIndex == 4 && currentTabItems.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 2.dp)
-                                .horizontalScroll(rememberScrollState()),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val favTabs = listOf(
-                                Triple(0, "Tümü ($favTotalCount)", Icons.Default.Favorite),
-                                Triple(1, "Canlı TV ($favLiveTotal)", Icons.Default.LiveTv),
-                                Triple(2, "Filmler ($favMoviesTotal)", Icons.Default.Movie),
-                                Triple(3, "Diziler ($favSeriesTotal)", Icons.Default.Tv)
-                            )
-                            favTabs.forEach { (filterIdx, label, icon) ->
-                                val isFilterSelected = selectedFavoriteFilter == filterIdx
-                                val accentColor = when (filterIdx) {
-                                    1 -> Color(0xFF42A5F5)
-                                    2 -> Color(0xFFE50914)
-                                    3 -> Color(0xFFFFB300)
-                                    else -> MaterialTheme.colorScheme.primary
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isFilterSelected) accentColor.copy(alpha = 0.22f) else Color(0xFF1A1F2B),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isFilterSelected) accentColor else Color(0xFF2D3548)
-                                    ),
-                                    modifier = Modifier
-                                        .height(34.dp)
-                                        .clickable { selectedFavoriteFilter = filterIdx }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = icon,
-                                            contentDescription = null,
-                                            tint = if (isFilterSelected) accentColor else Color(0xFFB0BEC5),
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = label,
-                                            color = if (isFilterSelected) Color.White else Color(0xFFCFD8DC),
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isFilterSelected) FontWeight.Bold else FontWeight.Medium,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
 
@@ -1330,7 +1252,7 @@ fun DashboardScreen(
 
             // Screen Content by Tab
             Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (isLandscape && selectedTabIndex in 1..3) {
+                if (isLandscape && selectedTabIndex in 2..3) {
                     DashboardCategorySidePanel(
                         displayGroups = displayGroups,
                         selectedGroup = selectedGroup,
@@ -1357,1366 +1279,248 @@ fun DashboardScreen(
                         .weight(1f)
                         .fillMaxHeight()
                         .focusProperties {
-                            if (isLandscape && selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+                            if (isLandscape && selectedTabIndex in 2..3 && displayGroups.isNotEmpty()) {
                                 left = selectedCategoryFocusRequester
                             }
                         }
                 ) {
                     when (selectedTabIndex) {
                     0 -> {
-                        // TAB 0: HOME / ANASAYFA
+                        // TAB 0: HOME / ANASAYFA (Redesigned with Hero+Fixtures, Sponsorship, TMDB, Continue Watching & Footer)
                         val heroItem = remember(visibleItems) { visibleItems.firstOrNull { it.type == ItemType.MOVIE && !it.logo.isNullOrEmpty() } ?: visibleItems.firstOrNull() }
-                        val popularMovies = remember(visibleItems) { visibleItems.asSequence().filter { it.type == ItemType.MOVIE }.take(15).toList() }
-                        val liveChannels = remember(visibleItems) { visibleItems.asSequence().filter { it.type == ItemType.LIVE }.take(15).toList() }
-                        val seriesGroups = remember(visibleItems) {
-                            val map = LinkedHashMap<String, MutableList<M3uItem>>()
-                            for (item in visibleItems) {
-                                if (item.type == ItemType.SERIES) {
-                                    val sName = item.seriesName ?: item.title
-                                    val existing = map[sName]
-                                    if (existing != null) {
-                                        existing.add(item)
-                                    } else if (map.size < 15) {
-                                        map[sName] = mutableListOf(item)
+                        HomeTabContent(
+                            heroItem = heroItem,
+                            onHeroClick = { item ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                    itemToUnlock = item
+                                } else if (item.type == ItemType.MOVIE) {
+                                    selectedMoviePlaylist = listOf(item)
+                                    selectedMovie = item
+                                } else {
+                                    playWithPlaylist(item, listOf(item))
+                                }
+                            },
+                            liveFixtures = liveFixtures,
+                            isFixturesRefreshing = isFixturesRefreshing,
+                            onRefreshFixtures = { refreshFixtures(true) },
+                            onShowAllFixtures = { showAllFixturesSheet = true },
+                            onFixtureClick = { fixture ->
+                                val matchedChannel = allItems.find { ch ->
+                                    ch.type == ItemType.LIVE && fixture.channelKeywords.any { kw -> ch.title.contains(kw, ignoreCase = true) }
+                                }
+                                if (matchedChannel != null) {
+                                    if (com.example.model.ParentalControlManager.isItemLocked(matchedChannel)) {
+                                        itemToUnlock = matchedChannel
+                                    } else {
+                                        playWithPlaylist(matchedChannel, listOf(matchedChannel))
                                     }
+                                } else {
+                                    Toast.makeText(context, "${fixture.homeTeam} - ${fixture.awayTeam} maç yayını bulunamadı", Toast.LENGTH_SHORT).show()
                                 }
-                            }
-                            map
-                        }
-
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 32.dp)
-                        ) {
-                            // Anasayfa (Tab 0) sabit kalacak (slider eklenmedi)
-
-                            // Hero Banner
-                            if (heroItem != null) {
-                                item {
-                                    HeroBanner(item = heroItem, onClick = {
-                                        if (com.example.model.ParentalControlManager.isItemLocked(heroItem)) {
-                                            itemToUnlock = heroItem
-                                        } else if (heroItem.type == ItemType.MOVIE) {
-                                            selectedMoviePlaylist = listOf(heroItem)
-                                            selectedMovie = heroItem
-                                        } else {
-                                            playWithPlaylist(heroItem, listOf(heroItem))
-                                        }
-                                    })
-                                    Spacer(modifier = Modifier.height(16.dp))
+                            },
+                            imdbReleases = imdbReleases,
+                            selectedImdbTimeFrame = selectedImdbTimeFrame,
+                            onSelectImdbTimeFrame = { selectedImdbTimeFrame = it },
+                            isMediaDataRefreshing = isMediaDataRefreshing,
+                            onRefreshMediaData = { refreshMediaData(true) },
+                            notifiedTmdbIds = notifiedTmdbIds,
+                            onToggleTmdbNotification = { item ->
+                                val isNotified = notifiedTmdbIds.contains(item.id)
+                                notifiedTmdbIds = if (isNotified) notifiedTmdbIds - item.id else {
+                                    Toast.makeText(context, "'${item.title}' için bildirim planlandı", Toast.LENGTH_SHORT).show()
+                                    notifiedTmdbIds + item.id
                                 }
-                            }
+                            },
+                            onImdbClick = { selectedImdbItem = it },
+                            recentAll = recentAll,
+                            onProgressClick = { progress ->
+                                val matched = allItems.find { it.url == progress.url }
+                                    ?: allItems.find { it.title.equals(progress.title, ignoreCase = true) }
 
-                            // ESPN Match Fixtures
-                            if (liveFixtures.isNotEmpty()) {
-                                item {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Default.SportsSoccer, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(20.dp))
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(
-                                                    text = "Günün Maçları & Fikstür",
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 16.sp,
-                                                    color = Color.White
-                                                )
-                                            }
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                if (isFixturesRefreshing) {
-                                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.primary)
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                } else {
-                                                    IconButton(
-                                                        onClick = { refreshFixtures(true) },
-                                                        modifier = Modifier.size(24.dp)
-                                                    ) {
-                                                        Icon(Icons.Default.Refresh, contentDescription = "Fikstürü Güncelle", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                                                    }
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                }
-                                                Text(
-                                                    text = stringResource(R.string.filter_all),
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.clickable { showAllFixturesSheet = true }
-                                                )
-                                            }
+                                val targetItem = if (matched != null) {
+                                    matched.copy(url = progress.url, title = progress.title)
+                                } else {
+                                    M3uItem(
+                                        title = progress.title,
+                                        url = progress.url,
+                                        logo = progress.logo,
+                                        type = when (progress.type.lowercase()) {
+                                            "live" -> com.example.parser.ItemType.LIVE
+                                            "series" -> com.example.parser.ItemType.SERIES
+                                            else -> com.example.parser.ItemType.MOVIE
                                         }
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(liveFixtures) { fixture ->
-                                                MatchFixtureCard(fixture = fixture, onClick = {
-                                                    // Find matching live sports channel
-                                                    val matchedChannel = allItems.find { channel ->
-                                                        channel.type == ItemType.LIVE && fixture.channelKeywords.any { kw -> channel.title.contains(kw, ignoreCase = true) }
-                                                    }
-                                                    if (matchedChannel != null) {
-                                                        if (com.example.model.ParentalControlManager.isItemLocked(matchedChannel)) {
-                                                            itemToUnlock = matchedChannel
-                                                        } else {
-                                                            playWithPlaylist(matchedChannel, listOf(matchedChannel))
-                                                        }
-                                                    } else {
-                                                        Toast.makeText(context, "${fixture.homeTeam} - ${fixture.awayTeam} maç yayını bulunamadı", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                })
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(18.dp))
-                                    }
+                                    )
                                 }
-                            }
 
-                            // IMDb / TMDb Upcoming Releases
-                            if (imdbReleases.isNotEmpty()) {
-                                item {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        if (isPortrait) {
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.SpaceBetween
-                                                ) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.weight(1f)
-                                                    ) {
-                                                        Surface(
-                                                            color = Color(0xFFF5C518),
-                                                            shape = RoundedCornerShape(4.dp)
-                                                        ) {
-                                                            Text(
-                                                                "TMDB",
-                                                                color = Color.Black,
-                                                                fontWeight = FontWeight.ExtraBold,
-                                                                fontSize = 11.sp,
-                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                            )
-                                                        }
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Text(
-                                                            text = "Yakında Vizyondakiler",
-                                                            fontWeight = FontWeight.Bold,
-                                                            fontSize = 16.sp,
-                                                            color = Color.White,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-
-                                                    if (isMediaDataRefreshing) {
-                                                        CircularProgressIndicator(
-                                                            modifier = Modifier.size(16.dp),
-                                                            strokeWidth = 1.5.dp,
-                                                            color = MaterialTheme.colorScheme.primary
-                                                        )
-                                                    } else {
-                                                        IconButton(
-                                                            onClick = { refreshMediaData(true) },
-                                                            modifier = Modifier.size(28.dp)
-                                                        ) {
-                                                            Icon(
-                                                                Icons.Default.Refresh,
-                                                                contentDescription = "Film/Dizi Verilerini Güncelle",
-                                                                tint = MaterialTheme.colorScheme.primary,
-                                                                modifier = Modifier.size(18.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                Spacer(modifier = Modifier.height(4.dp))
-
-                                                LazyRow(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                ) {
-                                                    items(ImdbTimeFrame.values().toList()) { tf ->
-                                                        FilterChip(
-                                                            selected = selectedImdbTimeFrame == tf,
-                                                            onClick = { selectedImdbTimeFrame = tf },
-                                                            label = {
-                                                                Text(
-                                                                    text = stringResource(tf.labelRes),
-                                                                    fontSize = 11.sp,
-                                                                    maxLines = 1,
-                                                                    softWrap = false
-                                                                )
-                                                            },
-                                                            colors = FilterChipDefaults.filterChipColors(
-                                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                                                selectedLabelColor = Color.White
-                                                            )
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Surface(
-                                                        color = Color(0xFFF5C518),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(
-                                                            "TMDB",
-                                                            color = Color.Black,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            fontSize = 11.sp,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text(
-                                                        text = "Yakında Vizyondakiler",
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 16.sp,
-                                                        color = Color.White
-                                                    )
-                                                }
-
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                                ) {
-                                                    if (isMediaDataRefreshing) {
-                                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.primary)
-                                                    } else {
-                                                        IconButton(
-                                                            onClick = { refreshMediaData(true) },
-                                                            modifier = Modifier.size(24.dp)
-                                                        ) {
-                                                            Icon(Icons.Default.Refresh, contentDescription = "Film/Dizi Verilerini Güncelle", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                                                        }
-                                                    }
-                                                    ImdbTimeFrame.values().forEach { tf ->
-                                                        FilterChip(
-                                                            selected = selectedImdbTimeFrame == tf,
-                                                            onClick = { selectedImdbTimeFrame = tf },
-                                                            label = { Text(stringResource(tf.labelRes), fontSize = 10.sp, maxLines = 1, softWrap = false) },
-                                                            colors = FilterChipDefaults.filterChipColors(
-                                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                                                selectedLabelColor = Color.White
-                                                            )
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(imdbReleases) { item ->
-                                                val isNotified = notifiedTmdbIds.contains(item.id)
-                                                ImdbCard(
-                                                    item = item,
-                                                    isNotified = isNotified,
-                                                    onNotifyToggle = {
-                                                        notifiedTmdbIds = if (isNotified) {
-                                                            notifiedTmdbIds - item.id
-                                                        } else {
-                                                            Toast.makeText(context, "'${item.title}' için bildirim planlandı", Toast.LENGTH_SHORT).show()
-                                                            notifiedTmdbIds + item.id
-                                                        }
-                                                    },
-                                                    onClick = { selectedImdbItem = item }
-                                                )
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(18.dp))
-                                    }
+                                if (com.example.model.ParentalControlManager.isItemLocked(targetItem)) {
+                                    itemToUnlock = targetItem
+                                } else {
+                                    com.example.model.PlayerRepository.lastPositions[targetItem.url] = progress.positionMs to progress.durationMs
+                                    com.example.model.PlayerRepository.preselectedResumeChoice = com.example.model.ResumeChoice.RESUME
+                                    playWithPlaylist(targetItem, listOf(targetItem))
                                 }
-                            }
-
-                            // Recent Progress (Son İzlenenler)
-                            if (recentAll.isNotEmpty()) {
-                                item {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        Text(
-                                            text = stringResource(R.string.continue_watching),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 16.sp,
-                                            color = Color.White,
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                                        )
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(recentAll) { progress ->
-                                                ProgressCard(progress = progress, onClick = {
-                                                    val matched = allItems.find { it.url == progress.url }
-                                                    if (matched != null) {
-                                                        if (com.example.model.ParentalControlManager.isItemLocked(matched)) {
-                                                            itemToUnlock = matched
-                                                        } else {
-                                                            playWithPlaylist(matched, listOf(matched))
-                                                        }
-                                                    }
-                                                })
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(18.dp))
-                                    }
-                                }
-                            }
-
-                            // Popular Movies
-                            if (popularMovies.isNotEmpty()) {
-                                item {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = stringResource(R.string.tab_movies),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 16.sp,
-                                                color = Color.White
-                                            )
-                                            Text(
-                                                text = stringResource(R.string.filter_all),
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontSize = 12.sp,
-                                                modifier = Modifier.clickable { selectedTabIndex = 2 }
-                                            )
-                                        }
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(popularMovies) { movie ->
-                                                MovieCard(item = movie, onClick = {
-                                                    if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
-                                                        itemToUnlock = movie
-                                                        playlistForUnlock = popularMovies
-                                                    } else {
-                                                        selectedMoviePlaylist = popularMovies
-                                                        selectedMovie = movie
-                                                    }
-                                                })
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(18.dp))
-                                    }
-                                }
-                            }
-
-                            // Popular Series
-                            if (seriesGroups.isNotEmpty()) {
-                                item {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = stringResource(R.string.tab_series),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 16.sp,
-                                                color = Color.White
-                                            )
-                                            Text(
-                                                text = stringResource(R.string.filter_all),
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontSize = 12.sp,
-                                                modifier = Modifier.clickable { selectedTabIndex = 3 }
-                                            )
-                                        }
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(seriesGroups.keys.take(15).toList()) { sName ->
-                                                val episodes = seriesGroups[sName] ?: emptyList()
-                                                val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.first()
-                                                Box(modifier = Modifier.width(122.dp)) {
-                                                    SeriesCard(
-                                                        seriesName = sName,
-                                                        item = posterItem,
-                                                        episodeCount = episodes.size,
-                                                        episodes = episodes,
-                                                        onPlayEpisode = { ep ->
-                                                            if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
-                                                                playlistForUnlock = episodes
-                                                                itemToUnlock = ep
-                                                            } else if (ep.url.contains("series_placeholder")) {
-                                                                selectedSeries = episodes
-                                                            } else {
-                                                                playWithPlaylist(ep, episodes)
-                                                            }
-                                                        },
-                                                        onClick = {
-                                                            if (com.example.model.ParentalControlManager.isItemLocked(posterItem)) {
-                                                                seriesToUnlock = episodes
-                                                            } else {
-                                                                selectedSeries = episodes
-                                                            }
-                                                        }
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(18.dp))
-                                    }
-                                }
-                            }
-
-                            // Live TV Channels
-                            if (liveChannels.isNotEmpty()) {
-                                item {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = stringResource(R.string.tab_live),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 16.sp,
-                                                color = Color.White
-                                            )
-                                            Text(
-                                                text = stringResource(R.string.filter_all),
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontSize = 12.sp,
-                                                modifier = Modifier.clickable { selectedTabIndex = 1 }
-                                            )
-                                        }
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(liveChannels) { channel ->
-                                                Box(modifier = Modifier.width(130.dp)) {
-                                                    ChannelCard(item = channel, onClick = {
-                                                        if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
-                                                            itemToUnlock = channel
-                                                        } else {
-                                                            playWithPlaylist(channel, liveChannels)
-                                                        }
-                                                    })
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            },
+                            isLandscape = isLandscape,
+                            isPortrait = isPortrait
+                        )
                     }
 
                     1 -> {
-                        // TAB 1: LIVE CHANNELS (CANLI)
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            // Reklam / Duyuru Slider Banner
-                            if (isAdBannerEnabled) {
-                                com.example.ui.components.AdSliderBanner(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
-                                        .focusProperties { canFocus = false },
-                                    height = if (isLandscape) 120.dp else 100.dp
-                                )
-                            }
-
-                            if (currentTabItems.isEmpty()) {
-                                val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
-                                val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
-                                Box(
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center,
-                                        modifier = Modifier.padding(24.dp)
-                                    ) {
-                                        if (isCategoryLoading || isTypeLoading) {
-                                            CircularProgressIndicator(
-                                                color = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(36.dp),
-                                                strokeWidth = 3.dp
-                                            )
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            Text(
-                                                text = if (selectedGroup != null) "$selectedGroup kanalları yükleniyor..." else "Canlı kanallar yükleniyor...",
-                                                color = Color.White,
-                                                fontSize = 15.sp,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                        } else {
-                                            Icon(
-                                                Icons.Default.LiveTv,
-                                                contentDescription = null,
-                                                tint = Color.Gray,
-                                                modifier = Modifier.size(56.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(12.dp))
-                                            Text(
-                                                text = if (searchQuery.isNotEmpty()) "Arama kriterine uygun kanal bulunamadı" else "Kanal bulunamadı",
-                                                color = Color.Gray,
-                                                fontSize = 14.sp
-                                            )
-                                        }
-                                    }
+                        // TAB 1: LIVE CHANNELS (CANLI) - YENİ TASARIM (image_f6d87f77.png)
+                        val isLiveCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
+                        val isLiveTypeLoading = currentType != null && typeLoadingStates[currentType] == true
+                        LiveTvTabContent(
+                            displayGroups = displayGroups,
+                            selectedGroup = selectedGroup,
+                            onSelectGroup = { group ->
+                                com.example.model.ParentalControlManager.onCategoryChanged(group)
+                                selectedGroup = group
+                            },
+                            groupCounts = groupCounts,
+                            currentTabItems = currentTabItems,
+                            isLandscape = isLandscape,
+                            isLoading = isLiveCategoryLoading || isLiveTypeLoading || (isBgLoading && currentTabItems.isEmpty()),
+                            onPlayChannel = { channel, playlist ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
+                                    itemToUnlock = channel
+                                } else {
+                                    playWithPlaylist(channel, playlist)
                                 }
-                            } else {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Adaptive(minSize = 120.dp),
-                                    contentPadding = PaddingValues(14.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth()
-                                        .focusProperties {
-                                            if (isLandscape && displayGroups.isNotEmpty()) {
-                                                left = selectedCategoryFocusRequester
-                                            }
-                                        }
-                                        .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                                if (isLandscape && displayGroups.isNotEmpty()) {
-                                                    val moved = focusManager.moveFocus(FocusDirection.Left)
-                                                    if (!moved) {
-                                                        navigateToActiveCategory()
-                                                        return@onPreviewKeyEvent true
-                                                    }
-                                                    return@onPreviewKeyEvent true
-                                                }
-                                            }
-                                            false
-                                        }
-                                ) {
-                                    items(currentTabItems, key = { "live_" + it.url.ifBlank { it.title } }) { channel ->
-                                        var isAtLeftEdge by remember { mutableStateOf(false) }
-                                        val cardModifier = Modifier
-                                            .onGloballyPositioned { coords ->
-                                                val x = coords.positionInParent().x
-                                                isAtLeftEdge = (x <= maxLeftThresholdPx)
-                                            }
-                                            .onPreviewKeyEvent { keyEvent ->
-                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft && isAtLeftEdge) {
-                                                    navigateToActiveCategory()
-                                                    true
-                                                } else {
-                                                    false
-                                                }
-                                            }
-
-                                        ChannelCard(
-                                            item = channel,
-                                            modifier = cardModifier,
-                                            onClick = {
-                                                if (com.example.model.ParentalControlManager.isItemLocked(channel)) {
-                                                    itemToUnlock = channel
-                                                } else {
-                                                    playWithPlaylist(channel, currentTabItems)
-                                                }
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                            },
+                            onRequestUnlock = { group ->
+                                sidePanelGroupToUnlock = group
+                            },
+                            currentTabFocusRequester = currentTabFocusRequester
+                        )
                     }
 
                     2 -> {
-                        // TAB 2: MOVIES (FLİM)
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            // Reklam / Duyuru Slider Banner
-                            if (isAdBannerEnabled) {
-                                com.example.ui.components.AdSliderBanner(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
-                                        .focusProperties { canFocus = false },
-                                    height = if (isLandscape) 120.dp else 100.dp
-                                )
-                            }
-
-                            if (currentTabItems.isEmpty()) {
-                                val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
-                                val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
-                                Box(
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center,
-                                    modifier = Modifier.padding(24.dp)
-                                ) {
-                                    if (isCategoryLoading || isTypeLoading) {
-                                        CircularProgressIndicator(
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(36.dp),
-                                            strokeWidth = 3.dp
-                                        )
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Text(
-                                            text = if (selectedGroup != null) "$selectedGroup filmleri yükleniyor..." else "Filmler yükleniyor...",
-                                            color = Color.White,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    } else {
-                                        Icon(
-                                            Icons.Default.Movie,
-                                            contentDescription = null,
-                                            tint = Color.Gray,
-                                            modifier = Modifier.size(56.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Text(
-                                            text = if (searchQuery.isNotEmpty()) "Arama kriterine uygun film bulunamadı" else "Film bulunamadı",
-                                            color = Color.Gray,
-                                            fontSize = 14.sp
-                                        )
-                                    }
+                        // TAB 2: MOVIES (FLİM) - YENİ TASARIM (image_c0d2633a.png)
+                        val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
+                        val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
+                        MediaCatalogTabContent(
+                            isMovie = true,
+                            currentTabItems = currentTabItems,
+                            allItems = allItems,
+                            selectedGroup = selectedGroup,
+                            recentProgressList = recentMovies,
+                            isLandscape = isLandscape,
+                            searchQuery = searchQuery,
+                            isLoading = isCategoryLoading || isTypeLoading || (isBgLoading && currentTabItems.isEmpty()),
+                            onMovieClick = { movie, playlist ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                    itemToUnlock = movie
+                                    playlistForUnlock = playlist
+                                } else {
+                                    selectedMoviePlaylist = playlist
+                                    selectedMovie = movie
                                 }
-                            }
-                        } else {
-                            if (isLandscape && selectedGroup != null) {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Adaptive(minSize = 110.dp),
-                                    contentPadding = PaddingValues(16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth()
-                                        .focusProperties {
-                                            if (isLandscape && displayGroups.isNotEmpty()) {
-                                                left = selectedCategoryFocusRequester
-                                            }
-                                        }
-                                        .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                                if (isLandscape && displayGroups.isNotEmpty()) {
-                                                    val moved = focusManager.moveFocus(FocusDirection.Left)
-                                                    if (!moved) {
-                                                        navigateToActiveCategory()
-                                                        return@onPreviewKeyEvent true
-                                                    }
-                                                    return@onPreviewKeyEvent true
-                                                }
-                                            }
-                                            false
-                                        }
-                                ) {
-                                    items(currentTabItems, key = { "movie_" + it.url.ifBlank { it.title } }) { movie ->
-                                        var isAtLeftEdge by remember { mutableStateOf(false) }
-                                        val cardModifier = Modifier
-                                            .onGloballyPositioned { coords ->
-                                                val x = coords.positionInParent().x
-                                                isAtLeftEdge = (x <= maxLeftThresholdPx)
-                                            }
-                                            .onPreviewKeyEvent { keyEvent ->
-                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft && isAtLeftEdge) {
-                                                    navigateToActiveCategory()
-                                                    true
-                                                } else {
-                                                    false
-                                                }
-                                            }
-
-                                        MovieCard(
-                                            item = movie,
-                                            modifier = cardModifier,
-                                            onClick = {
-                                                if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
-                                                    itemToUnlock = movie
-                                                    playlistForUnlock = currentTabItems
-                                                } else {
-                                                    selectedMoviePlaylist = currentTabItems
-                                                    selectedMovie = movie
-                                                }
-                                            }
-                                        )
-                                    }
+                            },
+                            onSeriesClick = { _, _ -> },
+                            onPlayStream = { movie, playlist ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                    itemToUnlock = movie
+                                    playlistForUnlock = playlist
+                                } else {
+                                    selectedMoviePlaylist = playlist
+                                    selectedMovie = movie
                                 }
-                            } else {
-                                val uncategorizedText = stringResource(R.string.uncategorized)
-                                val itemsByGroup = remember(currentTabItems, uncategorizedText) { currentTabItems.groupBy { it.group ?: uncategorizedText } }
-
-                                LazyColumn(
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    contentPadding = PaddingValues(bottom = 32.dp)
-                                ) {
-                                    if (currentTabItems.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
-                                        val heroMovie = currentTabItems.randomOrNull() ?: currentTabItems.first()
-                                        item {
-                                            HeroBanner(item = heroMovie, onClick = {
-                                                if (com.example.model.ParentalControlManager.isItemLocked(heroMovie)) {
-                                                    itemToUnlock = heroMovie
-                                                    playlistForUnlock = currentTabItems
-                                                } else {
-                                                    selectedMoviePlaylist = currentTabItems
-                                                    selectedMovie = heroMovie
-                                                }
-                                            })
-                                        }
-                                    }
-
-                                    if (recentMovies.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
-                                        item {
-                                            Text(
-                                                text = stringResource(R.string.continue_watching),
-                                                color = Color.White,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp, end = 16.dp)
-                                            )
-                                            LazyRow(
-                                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                items(recentMovies) { progress ->
-                                                    ProgressCard(progress = progress, onClick = {
-                                                        val matchedItem = allItems.find { it.url == progress.url }
-                                                        if (matchedItem != null) {
-                                                            if (com.example.model.ParentalControlManager.isItemLocked(matchedItem)) {
-                                                                itemToUnlock = matchedItem
-                                                                playlistForUnlock = listOf(matchedItem)
-                                                            } else {
-                                                                selectedMoviePlaylist = listOf(matchedItem)
-                                                                selectedMovie = matchedItem
-                                                            }
-                                                        }
-                                                    })
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    itemsByGroup.forEach { (groupName, groupItems) ->
-                                        if (groupItems.isNotEmpty()) {
-                                            item {
-                                                Text(
-                                                    text = groupName.uppercase(),
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 15.sp,
-                                                    modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp, end = 16.dp)
-                                                )
-                                                LazyRow(
-                                                    contentPadding = PaddingValues(horizontal = 16.dp),
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                ) {
-                                                    items(groupItems) { movie ->
-                                                        MovieCard(item = movie, onClick = {
-                                                            if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
-                                                                itemToUnlock = movie
-                                                                playlistForUnlock = groupItems
-                                                            } else {
-                                                                selectedMoviePlaylist = groupItems
-                                                                selectedMovie = movie
-                                                            }
-                                                        })
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                            },
+                            selectedCategoryFocusRequester = selectedCategoryFocusRequester,
+                            navigateToActiveCategory = { navigateToActiveCategory() }
+                        )
                     }
 
                     3 -> {
-                        // TAB 3: SERIES (DİZİ)
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            // Reklam / Duyuru Slider Banner
-                            if (isAdBannerEnabled) {
-                                com.example.ui.components.AdSliderBanner(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
-                                        .focusProperties { canFocus = false },
-                                    height = if (isLandscape) 120.dp else 100.dp
-                                )
-                            }
-
-                            if (currentTabItems.isEmpty()) {
-                                val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
-                                val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
-                                Box(
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center,
-                                        modifier = Modifier.padding(24.dp)
-                                    ) {
-                                        if (isCategoryLoading || isTypeLoading) {
-                                            CircularProgressIndicator(
-                                                color = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(36.dp),
-                                                strokeWidth = 3.dp
-                                            )
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            Text(
-                                                text = if (selectedGroup != null) "$selectedGroup dizileri yükleniyor..." else "Diziler yükleniyor...",
-                                                color = Color.White,
-                                                fontSize = 15.sp,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                        } else {
-                                            Icon(
-                                                Icons.Default.Tv,
-                                                contentDescription = null,
-                                                tint = Color.Gray,
-                                                modifier = Modifier.size(56.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(12.dp))
-                                            Text(
-                                                text = if (searchQuery.isNotEmpty()) "Arama kriterine uygun dizi bulunamadı" else "Dizi bulunamadı",
-                                                color = Color.Gray,
-                                                fontSize = 14.sp
-                                            )
-                                        }
-                                    }
+                        // TAB 3: SERIES (DİZİ) - YENİ TASARIM (image_c0d2633a.png)
+                        val isCategoryLoading = currentType != null && selectedGroup != null && categoryLoadingStates.contains(currentType to selectedGroup)
+                        val isTypeLoading = currentType != null && typeLoadingStates[currentType] == true
+                        MediaCatalogTabContent(
+                            isMovie = false,
+                            currentTabItems = currentTabItems,
+                            allItems = allItems,
+                            selectedGroup = selectedGroup,
+                            recentProgressList = recentSeries,
+                            isLandscape = isLandscape,
+                            searchQuery = searchQuery,
+                            isLoading = isCategoryLoading || isTypeLoading || (isBgLoading && currentTabItems.isEmpty()),
+                            onMovieClick = { _, _ -> },
+                            onSeriesClick = { seriesName, episodes ->
+                                val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.firstOrNull()
+                                if (posterItem != null && com.example.model.ParentalControlManager.isItemLocked(posterItem)) {
+                                    seriesToUnlock = episodes
+                                } else {
+                                    selectedSeries = episodes
                                 }
-                            } else {
-                                val seriesGroups = remember(currentTabItems) { currentTabItems.groupBy { it.seriesName ?: it.title } }
-
-                                LazyVerticalGrid(
-                                    columns = GridCells.Adaptive(minSize = 110.dp),
-                                    contentPadding = PaddingValues(16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth()
-                                        .focusProperties {
-                                            if (isLandscape && displayGroups.isNotEmpty()) {
-                                                left = selectedCategoryFocusRequester
-                                            }
-                                        }
-                                        .onPreviewKeyEvent { keyEvent ->
-                                            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft) {
-                                                if (isLandscape && displayGroups.isNotEmpty()) {
-                                                    val moved = focusManager.moveFocus(FocusDirection.Left)
-                                                    if (!moved) {
-                                                        navigateToActiveCategory()
-                                                        return@onPreviewKeyEvent true
-                                                    }
-                                                    return@onPreviewKeyEvent true
-                                                }
-                                            }
-                                            false
-                                        }
-                                ) {
-                                    if (recentSeries.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty()) {
-                                        item(span = { GridItemSpan(maxLineSpan) }) {
-                                            Column {
-                                                Text(
-                                                    text = stringResource(R.string.continue_watching),
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.padding(bottom = 8.dp)
-                                                )
-                                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                    items(recentSeries) { progress ->
-                                                        ProgressCard(progress = progress, onClick = {
-                                                            val matchedItem = allItems.find { it.url == progress.url }
-                                                            if (matchedItem != null) {
-                                                                if (com.example.model.ParentalControlManager.isItemLocked(matchedItem)) {
-                                                                    itemToUnlock = matchedItem
-                                                                } else {
-                                                                    playWithPlaylist(matchedItem, listOf(matchedItem))
-                                                                }
-                                                            }
-                                                        })
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.height(16.dp))
-                                            }
-                                        }
-                                    }
-
-                                    items(seriesGroups.keys.toList(), key = { "series_$it" }) { seriesName ->
-                                        val episodes = seriesGroups[seriesName] ?: emptyList()
-                                        val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.first()
-                                        var isAtLeftEdge by remember { mutableStateOf(false) }
-                                        val cardModifier = Modifier
-                                            .onGloballyPositioned { coords ->
-                                                val x = coords.positionInParent().x
-                                                isAtLeftEdge = (x <= maxLeftThresholdPx)
-                                            }
-                                            .onPreviewKeyEvent { keyEvent ->
-                                                if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionLeft && isAtLeftEdge) {
-                                                    navigateToActiveCategory()
-                                                    true
-                                                } else {
-                                                    false
-                                                }
-                                            }
-
-                                        SeriesCard(
-                                            seriesName = seriesName,
-                                            item = posterItem,
-                                            episodeCount = episodes.size,
-                                            episodes = episodes,
-                                            modifier = cardModifier,
-                                            onPlayEpisode = { ep ->
-                                                if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
-                                                    playlistForUnlock = episodes
-                                                    itemToUnlock = ep
-                                                } else if (ep.url.contains("series_placeholder")) {
-                                                    selectedSeries = episodes
-                                                } else {
-                                                    playWithPlaylist(ep, episodes)
-                                                }
-                                            },
-                                            onClick = {
-                                                if (com.example.model.ParentalControlManager.isItemLocked(posterItem)) {
-                                                    seriesToUnlock = episodes
-                                                } else {
-                                                    selectedSeries = episodes
-                                                }
-                                            }
-                                        )
-                                    }
+                            },
+                            onPlayStream = { ep, episodes ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
+                                    playlistForUnlock = episodes
+                                    itemToUnlock = ep
+                                } else if (ep.url.contains("series_placeholder")) {
+                                    selectedSeries = episodes
+                                } else {
+                                    playWithPlaylist(ep, episodes)
                                 }
-                            }
-                        }
+                            },
+                            selectedCategoryFocusRequester = selectedCategoryFocusRequester,
+                            navigateToActiveCategory = { navigateToActiveCategory() }
+                        )
                     }
 
                     4 -> {
-                        // TAB 4: FAVORITES (Filmler, Diziler ve Canlı TV'ler ayrı bölümler halinde)
-                        if (currentTabItems.isEmpty()) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.FavoriteBorder, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(64.dp))
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    Text(stringResource(R.string.no_favorites_yet), color = Color.Gray, fontSize = 14.sp)
-                                }
-                            }
-                        } else {
-                            val allSeriesMap = remember(visibleItems) {
-                                visibleItems.filter { it.type == ItemType.SERIES }
-                                    .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
-                            }
-                            val recentFavorites = remember(recentAll, favoriteUrls) {
-                                recentAll.filter { favoriteUrls.contains(it.url) }
-                            }
-                            val favMovies = remember(currentTabItems) {
-                                currentTabItems.filter { it.type == ItemType.MOVIE }
-                            }
-                            val favSeriesGroups = remember(currentTabItems) {
-                                currentTabItems.filter { it.type == ItemType.SERIES }
-                                    .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
-                                    .entries
-                                    .toList()
-                            }
-                            val favLive = remember(currentTabItems) {
-                                currentTabItems.filter { it.type == ItemType.LIVE }
-                            }
-
-                            val showLiveSection = (selectedFavoriteFilter == 0 || selectedFavoriteFilter == 1) && favLive.isNotEmpty()
-                            val showMoviesSection = (selectedFavoriteFilter == 0 || selectedFavoriteFilter == 2) && favMovies.isNotEmpty()
-                            val showSeriesSection = (selectedFavoriteFilter == 0 || selectedFavoriteFilter == 3) && favSeriesGroups.isNotEmpty()
-
-                            val liveBadgeLabel = stringResource(R.string.tab_live)
-                            val movieBadgeLabel = stringResource(R.string.tab_movies)
-
-                            if (!showLiveSection && !showMoviesSection && !showSeriesSection) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        val emptyIcon = when (selectedFavoriteFilter) {
-                                            1 -> Icons.Default.LiveTv
-                                            2 -> Icons.Default.Movie
-                                            3 -> Icons.Default.Tv
-                                            else -> Icons.Default.FavoriteBorder
-                                        }
-                                        val emptyText = when (selectedFavoriteFilter) {
-                                            1 -> stringResource(R.string.fav_empty_live)
-                                            2 -> stringResource(R.string.fav_empty_movies)
-                                            3 -> stringResource(R.string.fav_empty_series)
-                                            else -> stringResource(R.string.no_favorites_yet)
-                                        }
-                                        Icon(emptyIcon, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(56.dp))
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Text(emptyText, color = Color.Gray, fontSize = 14.sp)
-                                        if (selectedFavoriteFilter != 0) {
-                                            Spacer(modifier = Modifier.height(10.dp))
-                                            OutlinedButton(
-                                                onClick = { selectedFavoriteFilter = 0 },
-                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
-                                                shape = RoundedCornerShape(10.dp)
-                                            ) {
-                                                Text(stringResource(R.string.fav_show_all_btn), color = Color.White, fontSize = 12.sp)
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                LazyColumn(
-                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    if (recentFavorites.isNotEmpty() && selectedGroup == null && searchQuery.isEmpty() && selectedFavoriteFilter == 0) {
-                                        item(key = "fav_recent_section") {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Text(
-                                                    text = stringResource(R.string.continue_watching),
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 14.sp,
-                                                    modifier = Modifier.padding(bottom = 8.dp)
-                                                )
-                                                LazyRow(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .height(92.dp),
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                                ) {
-                                                    items(recentFavorites, key = { "recent_fav_" + it.url }) { progress ->
-                                                        ProgressCard(progress = progress, onClick = {
-                                                            val matchedItem = allItems.find { it.url == progress.url }
-                                                            if (matchedItem != null) {
-                                                                if (com.example.model.ParentalControlManager.isItemLocked(matchedItem)) {
-                                                                    itemToUnlock = matchedItem
-                                                                } else {
-                                                                    playWithPlaylist(matchedItem, currentTabItems)
-                                                                }
-                                                            }
-                                                        })
-                                                    }
-                                                }
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                            }
-                                        }
-                                    }
-
-                                    // 1. CANLI TV'LER BÖLÜMÜ
-                                    if (showLiveSection) {
-                                        item(key = "fav_section_live") {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Surface(
-                                                    color = Color(0xFF161B24),
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    border = BorderStroke(1.dp, Color(0xFF42A5F5).copy(alpha = 0.38f)),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(bottom = 8.dp)
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.SpaceBetween
-                                                    ) {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .width(4.dp)
-                                                                    .height(18.dp)
-                                                                    .background(Color(0xFF42A5F5), RoundedCornerShape(2.dp))
-                                                            )
-                                                            Spacer(modifier = Modifier.width(10.dp))
-                                                            Icon(
-                                                                imageVector = Icons.Default.LiveTv,
-                                                                contentDescription = null,
-                                                                tint = Color(0xFF42A5F5),
-                                                                modifier = Modifier.size(20.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.width(8.dp))
-                                                            Text(
-                                                                text = stringResource(R.string.fav_section_live),
-                                                                color = Color.White,
-                                                                fontWeight = FontWeight.ExtraBold,
-                                                                fontSize = 15.sp
-                                                            )
-                                                            Spacer(modifier = Modifier.width(10.dp))
-                                                            Surface(
-                                                                color = Color(0xFF42A5F5).copy(alpha = 0.2f),
-                                                                shape = RoundedCornerShape(12.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = stringResource(R.string.fav_count_live, favLive.size),
-                                                                    color = Color(0xFF90CAF9),
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    fontSize = 11.sp,
-                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                        if (selectedFavoriteFilter == 0 && (favMovies.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
-                                                            Text(
-                                                                text = stringResource(R.string.filter_all),
-                                                                color = Color(0xFF42A5F5),
-                                                                fontSize = 12.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                modifier = Modifier.clickable { selectedFavoriteFilter = 1 }
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                LazyRow(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                                ) {
-                                                    items(favLive, key = { "fav_live_" + it.url.ifBlank { it.title } }) { item ->
-                                                        MovieCard(
-                                                            item = item,
-                                                            modifier = Modifier.width(if (isLandscape) 135.dp else 122.dp),
-                                                            badgeText = item.group?.takeIf { it.isNotBlank() } ?: liveBadgeLabel,
-                                                            onClick = {
-                                                                if (com.example.model.ParentalControlManager.isItemLocked(item)) {
-                                                                    itemToUnlock = item
-                                                                } else {
-                                                                    playWithPlaylist(item, favLive)
-                                                                }
-                                                            }
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // 2. FİLMLER BÖLÜMÜ
-                                    if (showMoviesSection) {
-                                        item(key = "fav_section_movies") {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Surface(
-                                                    color = Color(0xFF161B24),
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    border = BorderStroke(1.dp, Color(0xFFE50914).copy(alpha = 0.38f)),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(bottom = 8.dp)
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.SpaceBetween
-                                                    ) {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .width(4.dp)
-                                                                    .height(18.dp)
-                                                                    .background(Color(0xFFE50914), RoundedCornerShape(2.dp))
-                                                            )
-                                                            Spacer(modifier = Modifier.width(10.dp))
-                                                            Icon(
-                                                                imageVector = Icons.Default.Movie,
-                                                                contentDescription = null,
-                                                                tint = Color(0xFFE50914),
-                                                                modifier = Modifier.size(20.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.width(8.dp))
-                                                            Text(
-                                                                text = stringResource(R.string.fav_section_movies),
-                                                                color = Color.White,
-                                                                fontWeight = FontWeight.ExtraBold,
-                                                                fontSize = 15.sp
-                                                            )
-                                                            Spacer(modifier = Modifier.width(10.dp))
-                                                            Surface(
-                                                                color = Color(0xFFE50914).copy(alpha = 0.2f),
-                                                                shape = RoundedCornerShape(12.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = stringResource(R.string.fav_count_movies, favMovies.size),
-                                                                    color = Color(0xFFFF6B6B),
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    fontSize = 11.sp,
-                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                        if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favSeriesGroups.isNotEmpty())) {
-                                                            Text(
-                                                                text = stringResource(R.string.filter_all),
-                                                                color = Color(0xFFE50914),
-                                                                fontSize = 12.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                modifier = Modifier.clickable { selectedFavoriteFilter = 2 }
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                LazyRow(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                                ) {
-                                                    items(favMovies, key = { "fav_movie_" + it.url.ifBlank { it.title } }) { item ->
-                                                        MovieCard(
-                                                            item = item,
-                                                            modifier = Modifier.width(if (isLandscape) 135.dp else 122.dp),
-                                                            badgeText = item.group?.takeIf { it.isNotBlank() } ?: movieBadgeLabel,
-                                                            onClick = {
-                                                                if (com.example.model.ParentalControlManager.isItemLocked(item)) {
-                                                                    itemToUnlock = item
-                                                                    playlistForUnlock = favMovies
-                                                                } else {
-                                                                    selectedMoviePlaylist = favMovies
-                                                                    selectedMovie = item
-                                                                }
-                                                            }
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // 3. DİZİLER BÖLÜMÜ
-                                    if (showSeriesSection) {
-                                        item(key = "fav_section_series") {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Surface(
-                                                    color = Color(0xFF161B24),
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    border = BorderStroke(1.dp, Color(0xFFFFB300).copy(alpha = 0.38f)),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(bottom = 8.dp)
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.SpaceBetween
-                                                    ) {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .width(4.dp)
-                                                                    .height(18.dp)
-                                                                    .background(Color(0xFFFFB300), RoundedCornerShape(2.dp))
-                                                            )
-                                                            Spacer(modifier = Modifier.width(10.dp))
-                                                            Icon(
-                                                                imageVector = Icons.Default.Tv,
-                                                                contentDescription = null,
-                                                                tint = Color(0xFFFFB300),
-                                                                modifier = Modifier.size(20.dp)
-                                                            )
-                                                            Spacer(modifier = Modifier.width(8.dp))
-                                                            Text(
-                                                                text = stringResource(R.string.fav_section_series),
-                                                                color = Color.White,
-                                                                fontWeight = FontWeight.ExtraBold,
-                                                                fontSize = 15.sp
-                                                            )
-                                                            Spacer(modifier = Modifier.width(10.dp))
-                                                            Surface(
-                                                                color = Color(0xFFFFB300).copy(alpha = 0.2f),
-                                                                shape = RoundedCornerShape(12.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = stringResource(R.string.fav_count_series, favSeriesGroups.size),
-                                                                    color = Color(0xFFFFCA28),
-                                                                    fontWeight = FontWeight.Bold,
-                                                                    fontSize = 11.sp,
-                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                        if (selectedFavoriteFilter == 0 && (favLive.isNotEmpty() || favMovies.isNotEmpty())) {
-                                                            Text(
-                                                                text = stringResource(R.string.filter_all),
-                                                                color = Color(0xFFFFB300),
-                                                                fontSize = 12.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                modifier = Modifier.clickable { selectedFavoriteFilter = 3 }
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                LazyRow(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                                ) {
-                                                    items(favSeriesGroups, key = { "fav_series_" + it.key }) { (sName, favEpisodes) ->
-                                                        val primaryFavItem = favEpisodes.first()
-                                                        val episodes = allSeriesMap[sName]?.takeIf { it.isNotEmpty() } ?: favEpisodes
-                                                        val fallbackLogo = episodes.firstOrNull { !it.logo.isNullOrEmpty() }?.logo
-                                                        val cardItem = if (primaryFavItem.logo.isNullOrEmpty() && !fallbackLogo.isNullOrEmpty()) {
-                                                            primaryFavItem.copy(logo = fallbackLogo)
-                                                        } else {
-                                                            primaryFavItem
-                                                        }
-                                                        Box(modifier = Modifier.width(if (isLandscape) 135.dp else 122.dp)) {
-                                                            SeriesCard(
-                                                                seriesName = sName,
-                                                                item = cardItem,
-                                                                episodeCount = episodes.size,
-                                                                episodes = episodes,
-                                                                onPlayEpisode = { ep ->
-                                                                    if (com.example.model.ParentalControlManager.isItemLocked(ep)) {
-                                                                        playlistForUnlock = episodes
-                                                                        itemToUnlock = ep
-                                                                    } else {
-                                                                        playWithPlaylist(ep, episodes)
-                                                                    }
-                                                                },
-                                                                onClick = {
-                                                                    if (com.example.model.ParentalControlManager.isItemLocked(cardItem)) {
-                                                                        seriesToUnlock = episodes
-                                                                    } else {
-                                                                        selectedSeries = episodes
-                                                                    }
-                                                                }
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        // TAB 4: FAVORITES - YENİ TASARIM (image_3487d4cc.png)
+                        val favMovies = remember(currentTabItems) {
+                            currentTabItems.filter { it.type == ItemType.MOVIE }
+                                .distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
                         }
+                        val favSeriesGroups = remember(currentTabItems) {
+                            currentTabItems.filter { it.type == ItemType.SERIES }
+                                .groupBy { (it.seriesName ?: it.title).trim().trimEnd('-', '–', '—', ':', '|', ' ').trim() }
+                                .entries
+                                .toList()
+                        }
+                        val allSeriesMap = remember(favSeriesGroups) {
+                            favSeriesGroups.associate { it.key to it.value }
+                        }
+                        val favLive = remember(currentTabItems) {
+                            currentTabItems.filter { it.type == ItemType.LIVE }
+                                .distinctBy { it.url.ifBlank { it.title } }
+                        }
+
+                        FavoritesTabContent(
+                            recentProgressList = recentAll,
+                            allItems = allItems,
+                            favLive = favLive,
+                            favMovies = favMovies,
+                            favSeriesGroups = favSeriesGroups,
+                            allSeriesMap = allSeriesMap,
+                            isLandscape = isLandscape,
+                            onPlayStream = { item, playlist ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(item)) {
+                                    itemToUnlock = item
+                                } else {
+                                    playWithPlaylist(item, playlist)
+                                }
+                            },
+                            onMovieClick = { movie, playlist ->
+                                if (com.example.model.ParentalControlManager.isItemLocked(movie)) {
+                                    itemToUnlock = movie
+                                    playlistForUnlock = playlist
+                                } else {
+                                    selectedMoviePlaylist = playlist
+                                    selectedMovie = movie
+                                }
+                            },
+                            onSeriesClick = { seriesName, episodes ->
+                                val posterItem = episodes.firstOrNull { !it.logo.isNullOrEmpty() } ?: episodes.firstOrNull()
+                                if (posterItem != null && com.example.model.ParentalControlManager.isItemLocked(posterItem)) {
+                                    seriesToUnlock = episodes
+                                } else {
+                                    selectedSeries = episodes
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -2877,6 +1681,7 @@ fun DashboardScreen(
                                                         sidePanelGroupToUnlock = group
                                                         showCategoryDrawer = false
                                                     } else {
+                                                        com.example.model.ParentalControlManager.onCategoryChanged(group)
                                                         selectedGroup = group
                                                         showCategoryDrawer = false
                                                     }
@@ -3883,7 +2688,7 @@ fun DashboardScreen(
                         Icon(Icons.Default.SportsSoccer, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(22.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Günün Maçları & Fikstür",
+                            text = stringResource(R.string.fixtures_title),
                             fontWeight = FontWeight.Bold,
                             fontSize = 17.sp,
                             color = Color.White

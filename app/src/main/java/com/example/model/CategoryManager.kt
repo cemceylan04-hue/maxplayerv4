@@ -29,6 +29,7 @@ object CategoryManager {
         }
         _hiddenCategories.value = current
         prefs.edit().putStringSet(KEY_HIDDEN_CATEGORIES, current).apply()
+        PlaylistRepository.clearPlaylistCaches()
     }
 
     fun setCategoryVisibility(categoryName: String, isVisible: Boolean) {
@@ -40,6 +41,7 @@ object CategoryManager {
         }
         _hiddenCategories.value = current
         prefs.edit().putStringSet(KEY_HIDDEN_CATEGORIES, current).apply()
+        PlaylistRepository.clearPlaylistCaches()
     }
 
     fun isCategoryHidden(categoryName: String): Boolean {
@@ -49,6 +51,7 @@ object CategoryManager {
     fun showAllCategories() {
         _hiddenCategories.value = emptySet()
         prefs.edit().remove(KEY_HIDDEN_CATEGORIES).apply()
+        PlaylistRepository.clearPlaylistCaches()
     }
 
     fun showCategoriesInList(categories: Collection<String>) {
@@ -56,6 +59,7 @@ object CategoryManager {
         current.removeAll(categories.toSet())
         _hiddenCategories.value = current
         prefs.edit().putStringSet(KEY_HIDDEN_CATEGORIES, current).apply()
+        PlaylistRepository.clearPlaylistCaches()
     }
 
     fun hideCategoriesInList(categories: Collection<String>) {
@@ -63,5 +67,6 @@ object CategoryManager {
         current.addAll(categories)
         _hiddenCategories.value = current
         prefs.edit().putStringSet(KEY_HIDDEN_CATEGORIES, current).apply()
+        PlaylistRepository.clearPlaylistCaches()
     }
 }

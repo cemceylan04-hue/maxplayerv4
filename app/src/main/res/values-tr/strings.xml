@@ -223,7 +223,7 @@
     <string name="odoo_no_playlists_assigned">Maxx Players sisteminde tanımlı çalma listesi bulunamadı.</string>
     <string name="odoo_waiting_playlists_desc">Web portalından listenizi ekledikten sonra listeniz otomatik olarak burada listelenecektir.</string>
     <string name="tab_fixtures">Fikstür</string>
-    <string name="fixtures_title">Günün Maçları &amp; Fikstür</string>
+    <string name="fixtures_title">Fikstür</string>
     <string name="fixtures_all">Tüm Fikstür</string>
     <string name="fixtures_live">Canlı Maçlar</string>
     <string name="fixtures_superlig">Süper Lig</string>
@@ -332,4 +332,10 @@
     <string name="favorited_btn">Favorilerde</string>
     <string name="error_server_blocked">Bu sunucudan liste alınamadı. Sunucu geçici olarak erişimi engellemiş olabilir.</string>
     <string name="error_server_invalid_playlist">Sunucu geçerli bir liste döndürmedi</string>
+    <string name="home_sponsor">Sponsorluk</string>
+    <string name="home_sponsor_badge">Sponsorlu</string>
+    <string name="footer_copyright">maxxplayers.com · Tüm hakları saklıdır</string>
+    <string name="footer_favorite">Favori</string>
+    <string name="footer_lock">Kilit</string>
+    <string name="footer_info">Bilgi</string>
 </resources>

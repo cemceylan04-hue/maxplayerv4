@@ -143,8 +143,46 @@ object ParentalControlManager {
         return false
     }
 
+    /**
+     * Kategori PIN girilerek açıldığında, o kategoriyi geçici olarak oturum bazlı açar.
+     */
+    fun unlockCategoryTemporarily(groupName: String) {
+        val clean = groupName.trim()
+        _sessionUnlockedGroups.value = setOf(clean)
+    }
+
     fun unlockGroupForSession(groupName: String) {
-        _sessionUnlockedGroups.value = _sessionUnlockedGroups.value + groupName
+        unlockCategoryTemporarily(groupName)
+    }
+
+    /**
+     * Kategorinin PIN ile geçici olarak açılıp açılmadığını kontrol eder.
+     */
+    fun isGroupSessionUnlocked(groupName: String?): Boolean {
+        if (groupName.isNullOrBlank()) return false
+        val clean = groupName.trim()
+        return _sessionUnlockedGroups.value.any { it.equals(clean, ignoreCase = true) }
+    }
+
+    /**
+     * Kullanıcı başka bir kategoriye geçtiğinde geçici kilit açmasını sıfırlar ve kilidi otomatik yeniden devreye alır.
+     */
+    fun onCategoryChanged(newGroupName: String?) {
+        if (newGroupName.isNullOrBlank()) {
+            _sessionUnlockedGroups.value = emptySet()
+            return
+        }
+        val clean = newGroupName.trim()
+        if (!_sessionUnlockedGroups.value.any { it.equals(clean, ignoreCase = true) }) {
+            _sessionUnlockedGroups.value = emptySet()
+        }
+    }
+
+    /**
+     * Tüm geçici kategori kilitlerini sıfırlayıp yeniden kilitli hale getirir.
+     */
+    fun lockAllSessionCategories() {
+        _sessionUnlockedGroups.value = emptySet()
     }
 
     fun unlockChannelForSession(channelUrl: String) {
@@ -272,14 +310,20 @@ object ParentalControlManager {
 
     fun isChannelLocked(channelUrl: String, title: String? = null, group: String? = null): Boolean {
         if (_explicitlyUnlockedChannels.value.contains(channelUrl)) return false
-        if (!group.isNullOrBlank() && isGroupLocked(group)) return true
+        val grp = group?.trim() ?: ""
+        // Kategori PIN girilerek açıldıysa, bu kategorideki kanallarda kilit otomatik kalkar
+        if (grp.isNotBlank() && isGroupSessionUnlocked(grp)) return false
+        if (grp.isNotBlank() && isGroupLocked(grp)) return true
         if (isAdultChannel(title, group, channelUrl)) return true
         return _lockedChannels.value.contains(channelUrl)
     }
     
     fun isItemLocked(item: com.example.parser.M3uItem): Boolean {
         if (_explicitlyUnlockedChannels.value.contains(item.url)) return false
-        if (!item.group.isNullOrBlank() && isGroupLocked(item.group)) return true
+        val grp = item.group?.trim() ?: ""
+        // Kategori PIN girilerek açıldıysa, bu kategorideki kanallarda kilit otomatik kalkar
+        if (grp.isNotBlank() && isGroupSessionUnlocked(grp)) return false
+        if (grp.isNotBlank() && isGroupLocked(grp)) return true
         if (isAdultChannel(item.title, item.group, item.url)) return true
         return _lockedChannels.value.contains(item.url)
     }
@@ -297,6 +341,8 @@ object ParentalControlManager {
 
     fun isGroupLocked(groupName: String): Boolean {
         if (_explicitlyUnlockedGroups.value.contains(groupName)) return false
+        // Eğer kategori PIN ile geçici olarak açıldıysa KİLİTLİ DEĞİLDİR
+        if (isGroupSessionUnlocked(groupName)) return false
         if (isAdultCategory(groupName)) return true
         if (_pinCode.value == null) return false
         return _lockedGroups.value.contains(groupName)

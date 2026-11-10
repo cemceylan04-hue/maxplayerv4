@@ -60,10 +60,11 @@ object FavoritesManager {
     }
 
     fun isMovieFavorite(movieItem: M3uItem): Boolean {
-        if (isFavorite(movieItem.url)) return true
         val normTitle = normalizeKey(movieItem.title)
-        if (normTitle.isNotBlank() && _favoriteMovieTitles.value.contains(normTitle)) return true
-        return false
+        if (normTitle.isNotBlank()) {
+            return _favoriteMovieTitles.value.contains(normTitle)
+        }
+        return isFavorite(movieItem.url)
     }
 
     fun toggleMovieFavorite(movieItem: M3uItem): Boolean {

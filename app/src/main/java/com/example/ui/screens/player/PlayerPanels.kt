@@ -284,6 +284,7 @@ fun PlayerSidePanel(
             pendingCategoryIndex = newIndex
             showPinDialogForCategory = true
         } else {
+            ParentalControlManager.onCategoryChanged(nextCat)
             currentCategoryIndex = newIndex
             focusedIndex = 0
         }
@@ -917,6 +918,7 @@ fun PlayerSidePanel(
             title = catToUnlock,
             subtitle = "Kategoriye erişmek için PIN girin",
             onUnlock = {
+                catToUnlock?.let { ParentalControlManager.unlockCategoryTemporarily(it) }
                 currentCategoryIndex = pendingCategoryIndex
                 showPinDialogForCategory = false
             },

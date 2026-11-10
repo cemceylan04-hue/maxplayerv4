@@ -34,7 +34,8 @@ import com.example.model.db.UserEntity
 import com.example.ui.theme.RedPrimary
 import kotlinx.coroutines.launch
 
-private const val DEFAULT_FALLBACK_CLIENT_ID = "65327632118-76n7d7o8brpa0f3do0s3jieivh7oqm6s.apps.googleusercontent.com"
+// Web Client ID used across Odoo, Tizen, and Android Google Identity Services
+private const val DEFAULT_FALLBACK_CLIENT_ID = "65327632118-hpoe8apnlf4s9aqjhfeicvb1obv4slkc.apps.googleusercontent.com"
 
 @Composable
 fun GoogleSignInScreen(
