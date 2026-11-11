@@ -9,6 +9,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.window.Dialog
@@ -825,7 +826,11 @@ fun DashboardScreen(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .clickable { selectedTabIndex = 0 }
+                            .focusProperties { canFocus = false }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { selectedTabIndex = 0 }
                             .padding(vertical = 4.dp)
                     ) {
                         Text(
@@ -951,7 +956,11 @@ fun DashboardScreen(
                         modifier = Modifier
                             .fillMaxHeight()
                             .padding(end = 12.dp)
-                            .clickable { selectedTabIndex = 0 }
+                            .focusProperties { canFocus = false }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { selectedTabIndex = 0 }
                     ) {
                         Text(
                             text = androidx.compose.ui.text.buildAnnotatedString {
@@ -1007,26 +1016,43 @@ fun DashboardScreen(
                                     .then(if (isSelected) Modifier.focusRequester(currentTabFocusRequester) else Modifier)
                                     .onFocusChanged { isItemFocused = it.isFocused }
                                     .onPreviewKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.DirectionDown) {
-                                            if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
-                                                scope.launch {
-                                                    val selIdx = displayGroups.indexOf(selectedGroup).takeIf { it >= 0 } ?: 0
-                                                    if (selIdx > 0) {
-                                                        categoryListState.scrollToItem(selIdx)
-                                                    } else {
-                                                        categoryListState.scrollToItem(0)
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            if (keyEvent.key == Key.DirectionDown) {
+                                                if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+                                                    scope.launch {
+                                                        val selIdx = displayGroups.indexOf(selectedGroup).takeIf { it >= 0 } ?: 0
+                                                        if (selIdx > 0) {
+                                                            categoryListState.scrollToItem(selIdx)
+                                                        } else {
+                                                            categoryListState.scrollToItem(0)
+                                                        }
+                                                        kotlinx.coroutines.delay(20)
+                                                        try {
+                                                            selectedCategoryFocusRequester.requestFocus()
+                                                        } catch (_: Exception) {}
                                                     }
-                                                    kotlinx.coroutines.delay(20)
-                                                    try {
-                                                        selectedCategoryFocusRequester.requestFocus()
-                                                    } catch (_: Exception) {}
+                                                    true
+                                                } else {
+                                                    false
                                                 }
+                                            } else if (keyEvent.key == Key.DirectionLeft && index == 1) {
+                                                // CANLI TV sekmesinden SOL tuşa basıldığında ANA SAYFA sekmesine geç
+                                                selectedTabIndex = 0
+                                                selectedGroup = null
+                                                searchQuery = ""
                                                 true
                                             } else {
                                                 false
                                             }
                                         } else {
                                             false
+                                        }
+                                    }
+                                    .focusProperties {
+                                        // ANA SAYFA sekmesi (index 0) sadece seçili sekme ANA SAYFA iken doğrudan odak alabilir.
+                                        // Canlı TV / Film / Dizi içindeyken otomatik / kaçak odakların ANA SAYFA'ya atlaması engellendi!
+                                        if (index == 0) {
+                                            canFocus = (selectedTabIndex == 0)
                                         }
                                     }
                                     .border(
@@ -1390,7 +1416,8 @@ fun DashboardScreen(
                             onRequestUnlock = { group ->
                                 sidePanelGroupToUnlock = group
                             },
-                            currentTabFocusRequester = currentTabFocusRequester
+                            currentTabFocusRequester = currentTabFocusRequester,
+                            categoryFocusRequester = selectedCategoryFocusRequester
                         )
                     }
 

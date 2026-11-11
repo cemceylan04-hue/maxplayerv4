@@ -86,6 +86,7 @@ fun LiveTvTabContent(
     onPlayChannel: (M3uItem, List<M3uItem>) -> Unit,
     onRequestUnlock: (String) -> Unit = {},
     currentTabFocusRequester: FocusRequester? = null,
+    categoryFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -116,6 +117,7 @@ fun LiveTvTabContent(
     val channelListState = rememberLazyListState(initialFirstVisibleItemIndex = initialScrollIndex)
     val activeChannelFocusRequester = remember { FocusRequester() }
     val miniPlayerFocusRequester = remember { FocusRequester() }
+    val selectedCategoryFocusRequester = categoryFocusRequester ?: remember { FocusRequester() }
 
     var categoryToUnlock by remember { mutableStateOf<String?>(null) }
 
@@ -153,14 +155,18 @@ fun LiveTvTabContent(
                 currentTabItems.find { it.url == targetUrl }
             } else null
 
-            val targetChannel = matching ?: selectedLiveChannel ?: currentTabItems.firstOrNull()
+            val targetChannel = matching ?: currentTabItems.find { it.url == selectedLiveChannel?.url } ?: currentTabItems.firstOrNull()
             if (targetChannel != null) {
                 selectedLiveChannel = targetChannel
                 val activeIdx = currentTabItems.indexOfFirst { it.url == targetChannel.url }
                 if (activeIdx >= 0 && isViewingChannels) {
                     val targetScroll = (activeIdx - 2).coerceAtLeast(0)
                     channelListState.scrollToItem(targetScroll)
-                    delay(120)
+                    delay(100)
+                    try {
+                        activeChannelFocusRequester.requestFocus()
+                    } catch (_: Exception) {}
+                    delay(250)
                     try {
                         activeChannelFocusRequester.requestFocus()
                     } catch (_: Exception) {}
@@ -234,6 +240,14 @@ fun LiveTvTabContent(
     BackHandler(enabled = isViewingChannels) {
         isViewingChannels = false
         com.example.model.ParentalControlManager.lockAllSessionCategories()
+        coroutineScope.launch {
+            val idx = displayGroups.indexOf(selectedGroup).coerceAtLeast(0)
+            categoryListState.scrollToItem(idx)
+            delay(120)
+            try {
+                selectedCategoryFocusRequester.requestFocus()
+            } catch (_: Exception) {}
+        }
     }
 
     // Sponsorluk verileri (7 adet marka kartı)
@@ -319,84 +333,84 @@ fun LiveTvTabContent(
                 color = if (isViewingChannels) Color(0xFF26040A) else Color(0xFF0B101B),
                 border = BorderStroke(1.dp, if (isViewingChannels) Color(0xFF6E0D1A) else BorderNavy)
             ) {
-                AnimatedContent(
-                    targetState = isViewingChannels,
-                    transitionSpec = {
-                        if (targetState) {
-                            (slideInHorizontally { width -> width } + fadeIn()).togetherWith(
-                                slideOutHorizontally { width -> -width } + fadeOut()
-                            )
-                        } else {
-                            (slideInHorizontally { width -> -width } + fadeIn()).togetherWith(
-                                slideOutHorizontally { width -> width } + fadeOut()
-                            )
-                        }
-                    },
-                    label = "CategoryChannelTransition"
-                ) { viewingChannels ->
-                    if (!viewingChannels) {
-                        // KATEGORİLER LİSTESİ (Arka plan mavi/lacivert korunur)
-                        LiveCategoryListPanel(
-                            displayGroups = displayGroups,
-                            selectedGroup = selectedGroup,
-                            groupCounts = groupCounts,
-                            listState = categoryListState,
-                            onSelectCategory = { group ->
-                                val isSameGroup = (group == selectedGroup)
-                                com.example.model.ParentalControlManager.onCategoryChanged(group)
-                                onSelectGroup(group)
-                                isViewingChannels = true
-                                coroutineScope.launch {
-                                    if (!isSameGroup) {
-                                        channelListState.scrollToItem(0)
-                                    } else {
-                                        val activeIdx = currentTabItems.indexOfFirst { it.url == selectedLiveChannel?.url }
-                                        if (activeIdx >= 0) {
-                                            channelListState.scrollToItem((activeIdx - 2).coerceAtLeast(0))
-                                        }
+                if (!isViewingChannels) {
+                    // KATEGORİLER LİSTESİ (Arka plan mavi/lacivert korunur)
+                    LiveCategoryListPanel(
+                        displayGroups = displayGroups,
+                        selectedGroup = selectedGroup,
+                        groupCounts = groupCounts,
+                        listState = categoryListState,
+                        onSelectCategory = { group ->
+                            val isSameGroup = (group == selectedGroup)
+                            com.example.model.ParentalControlManager.onCategoryChanged(group)
+                            onSelectGroup(group)
+                            isViewingChannels = true
+                            coroutineScope.launch {
+                                if (!isSameGroup) {
+                                    channelListState.scrollToItem(0)
+                                } else {
+                                    val activeIdx = currentTabItems.indexOfFirst { it.url == selectedLiveChannel?.url }
+                                    if (activeIdx >= 0) {
+                                        channelListState.scrollToItem((activeIdx - 2).coerceAtLeast(0))
                                     }
                                 }
-                            },
-                            onRequestUnlock = { group ->
-                                categoryToUnlock = group
+                                try {
+                                    activeChannelFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
+                                delay(50)
+                                try {
+                                    activeChannelFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
                             }
-                        )
-                    } else {
-                        // KANAL LİSTESİ (Arka plan kırmızı olur; ilk tıklama mini TV'de oynatır, 2. tıklama/OK tam ekran yapar)
-                        LiveChannelListPanel(
-                            selectedGroup = selectedGroup,
-                            channels = currentTabItems,
-                            selectedChannel = selectedLiveChannel,
-                            listState = channelListState,
-                            activeFocusRequester = activeChannelFocusRequester,
-                            rightFocusRequester = miniPlayerFocusRequester,
-                            onBackToCategories = {
-                                isViewingChannels = false
-                                com.example.model.ParentalControlManager.lockAllSessionCategories()
-                                // Geri dönüldüğünde mevcut kategorinin üzerine odaklan
-                                coroutineScope.launch {
-                                    val idx = displayGroups.indexOf(selectedGroup).coerceAtLeast(0)
-                                    categoryListState.animateScrollToItem(idx)
-                                }
-                            },
-                            onChannelFocused = { ch ->
-                                selectedLiveChannel = ch
-                                com.example.model.PlayerRepository.lastPlayedLiveChannel = ch
-                                com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = ch.url
-                                com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = ch.group
-                            },
-                            onChannelClick = { ch ->
-                                selectedLiveChannel = ch
-                                com.example.model.PlayerRepository.lastPlayedLiveChannel = ch
-                                com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = ch.url
-                                com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = ch.group
-                                if (selectedLiveChannel?.url == ch.url) {
-                                    onPlayChannel(ch, currentTabItems)
-                                }
-                            },
-                            isLoading = isLoading
-                        )
-                    }
+                        },
+                        onRequestUnlock = { group ->
+                            categoryToUnlock = group
+                        },
+                        selectedCategoryFocusRequester = selectedCategoryFocusRequester,
+                        currentTabFocusRequester = currentTabFocusRequester
+                    )
+                } else {
+                    // KANAL LİSTESİ (Arka plan kırmızı olur; ilk tıklama mini TV'de oynatır, 2. tıklama/OK tam ekran yapar)
+                    LiveChannelListPanel(
+                        selectedGroup = selectedGroup,
+                        channels = currentTabItems,
+                        selectedChannel = selectedLiveChannel,
+                        listState = channelListState,
+                        activeFocusRequester = activeChannelFocusRequester,
+                        rightFocusRequester = miniPlayerFocusRequester,
+                        onBackToCategories = {
+                            isViewingChannels = false
+                            com.example.model.ParentalControlManager.lockAllSessionCategories()
+                            // Geri dönüldüğünde mevcut kategorinin üzerine odaklan
+                            coroutineScope.launch {
+                                val idx = displayGroups.indexOf(selectedGroup).coerceAtLeast(0)
+                                categoryListState.scrollToItem(idx)
+                                try {
+                                    selectedCategoryFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
+                                delay(50)
+                                try {
+                                    selectedCategoryFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
+                            }
+                        },
+                        onChannelFocused = { ch ->
+                            selectedLiveChannel = ch
+                            com.example.model.PlayerRepository.lastPlayedLiveChannel = ch
+                            com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = ch.url
+                            com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = ch.group
+                        },
+                        onChannelClick = { ch ->
+                            selectedLiveChannel = ch
+                            com.example.model.PlayerRepository.lastPlayedLiveChannel = ch
+                            com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = ch.url
+                            com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = ch.group
+                            if (selectedLiveChannel?.url == ch.url) {
+                                onPlayChannel(ch, currentTabItems)
+                            }
+                        },
+                        isLoading = isLoading
+                    )
                 }
             }
 
@@ -526,11 +540,21 @@ fun LiveTvTabContent(
                                         channelListState.scrollToItem((activeIdx - 2).coerceAtLeast(0))
                                     }
                                 }
+                                delay(100)
+                                try {
+                                    activeChannelFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
+                                delay(250)
+                                try {
+                                    activeChannelFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
                             }
                         },
                         onRequestUnlock = { group ->
                             categoryToUnlock = group
-                        }
+                        },
+                        selectedCategoryFocusRequester = selectedCategoryFocusRequester,
+                        currentTabFocusRequester = currentTabFocusRequester
                     )
                 } else {
                     LiveChannelListPanel(
@@ -543,6 +567,14 @@ fun LiveTvTabContent(
                         onBackToCategories = {
                             isViewingChannels = false
                             com.example.model.ParentalControlManager.lockAllSessionCategories()
+                            coroutineScope.launch {
+                                val idx = displayGroups.indexOf(selectedGroup).coerceAtLeast(0)
+                                categoryListState.scrollToItem(idx)
+                                delay(120)
+                                try {
+                                    selectedCategoryFocusRequester.requestFocus()
+                                } catch (_: Exception) {}
+                            }
                         },
                         onChannelFocused = {
                             selectedLiveChannel = it
@@ -586,7 +618,9 @@ private fun LiveCategoryListPanel(
     groupCounts: Map<String, Int>,
     listState: LazyListState,
     onSelectCategory: (String) -> Unit,
-    onRequestUnlock: (String) -> Unit
+    onRequestUnlock: (String) -> Unit,
+    selectedCategoryFocusRequester: FocusRequester? = null,
+    currentTabFocusRequester: FocusRequester? = null
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // Başlık
@@ -642,6 +676,8 @@ private fun LiveCategoryListPanel(
         ) {
             itemsIndexed(displayGroups, key = { index, g -> "${index}_$g" }) { index, group ->
                 val isSelected = (group == selectedGroup)
+                val hasSelectedCategory = displayGroups.contains(selectedGroup)
+                val isFocusTarget = if (hasSelectedCategory) isSelected else (index == 0)
                 var isItemFocused by remember { mutableStateOf(false) }
                 val isLocked = com.example.model.ParentalControlManager.isGroupLocked(group)
                 val count = groupCounts[group] ?: 0
@@ -663,6 +699,16 @@ private fun LiveCategoryListPanel(
                             color = if (isItemFocused) RedPrimary else if (isSelected) BorderNavy else Color.Transparent,
                             shape = RoundedCornerShape(8.dp)
                         )
+                        .then(
+                            if (isFocusTarget && selectedCategoryFocusRequester != null) {
+                                Modifier.focusRequester(selectedCategoryFocusRequester)
+                            } else Modifier
+                        )
+                        .focusProperties {
+                            if (index == 0 && currentTabFocusRequester != null) {
+                                up = currentTabFocusRequester
+                            }
+                        }
                         .onFocusChanged { isItemFocused = it.isFocused }
                         .tvRemoteCardClickable(
                             onClick = {
@@ -751,20 +797,25 @@ private fun LiveChannelListPanel(
     rightFocusRequester: FocusRequester? = null,
     isLoading: Boolean = false
 ) {
-    // Seçili/oynatılan kanal liste dışındaysa görünür alana otomatik getir
-    LaunchedEffect(selectedGroup, selectedChannel?.url, channels.isNotEmpty()) {
-        if (channels.isNotEmpty() && selectedChannel != null) {
-            val activeIndex = channels.indexOfFirst { it.url == selectedChannel.url }
-            if (activeIndex >= 0) {
-                val visibleInfo = listState.layoutInfo.visibleItemsInfo
-                val isVisible = visibleInfo.any { it.index == activeIndex }
-                if (!isVisible) {
-                    val targetScroll = (activeIndex - 2).coerceAtLeast(0)
-                    listState.scrollToItem(targetScroll)
-                }
-            }
+    // Seçili/oynatılan kanal liste dışındaysa görünür alana getir ve odaklan
+    LaunchedEffect(selectedGroup, channels.isNotEmpty()) {
+        if (channels.isNotEmpty()) {
+            val activeIndex = channels.indexOfFirst { it.url == selectedChannel?.url }
+            val targetIdx = if (activeIndex >= 0) activeIndex else 0
+            val targetScroll = (targetIdx - 2).coerceAtLeast(0)
+            listState.scrollToItem(targetScroll)
+            delay(100)
+            try {
+                activeFocusRequester?.requestFocus()
+            } catch (_: Exception) {}
+            delay(250)
+            try {
+                activeFocusRequester?.requestFocus()
+            } catch (_: Exception) {}
         }
     }
+
+    val categoriesButtonFocusRequester = remember { FocusRequester() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Üst Geri Butonu: ‹ KATEGORİLER
@@ -782,7 +833,9 @@ private fun LiveChannelListPanel(
                 )
                 .clickable { onBackToCategories() }
                 .onFocusChanged { isBackFocused = it.isFocused }
+                .focusRequester(categoriesButtonFocusRequester)
                 .focusProperties {
+                    up = categoriesButtonFocusRequester
                     if (activeFocusRequester != null) {
                         down = activeFocusRequester
                     }
@@ -857,12 +910,18 @@ private fun LiveChannelListPanel(
                 contentPadding = PaddingValues(vertical = 6.dp, horizontal = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                itemsIndexed(channels, key = { index, it -> "ch_${index}_${it.url.ifBlank { it.title }}" }) { _, channel ->
+                itemsIndexed(channels, key = { index, it -> "ch_${index}_${it.url.ifBlank { it.title }}" }) { channelIndex, channel ->
                     val isCurrent = (channel.url == selectedChannel?.url)
                     var isFocused by remember { mutableStateOf(false) }
                     val favoriteUrls by com.example.model.FavoritesManager.favoriteUrls.collectAsState()
                     val isFav = favoriteUrls.contains(channel.url)
                     val isLocked = com.example.model.ParentalControlManager.isItemLocked(channel)
+                    val hasSelectedInList = channels.any { it.url == selectedChannel?.url }
+                    val isTargetFocusItem = if (hasSelectedInList) {
+                        channel.url == selectedChannel?.url
+                    } else {
+                        channelIndex == 0
+                    }
 
                     Row(
                         modifier = Modifier
@@ -882,11 +941,14 @@ private fun LiveChannelListPanel(
                                 shape = RoundedCornerShape(10.dp)
                             )
                             .then(
-                                if (isCurrent && activeFocusRequester != null) {
+                                if (isTargetFocusItem && activeFocusRequester != null) {
                                     Modifier.focusRequester(activeFocusRequester)
                                 } else Modifier
                             )
                             .focusProperties {
+                                if (channelIndex == 0) {
+                                    up = categoriesButtonFocusRequester
+                                }
                                 if (rightFocusRequester != null) {
                                     right = rightFocusRequester
                                 }

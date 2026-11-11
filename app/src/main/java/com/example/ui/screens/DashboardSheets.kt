@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,9 +26,21 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.input.ImeAction
 import com.example.R
 import com.example.parser.M3uItem
 import com.example.ui.theme.RedPrimary
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -1371,21 +1384,74 @@ fun SupportTicketsSheet(onClose: () -> Unit) {
     var isSubmitting by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+
+    val titleFocusRequester = remember { FocusRequester() }
+    val messageFocusRequester = remember { FocusRequester() }
+    val sendButtonFocusRequester = remember { FocusRequester() }
+    val cancelButtonFocusRequester = remember { FocusRequester() }
+    val newTicketBtnFocusRequester = remember { FocusRequester() }
+
+    BackHandler(enabled = showNewTicketForm) {
+        showNewTicketForm = false
+    }
+
     LaunchedEffect(Unit) {
-        com.example.model.SupportRepository.syncTicketsFromOdoo()
+        try {
+            com.example.model.SupportRepository.syncTicketsFromOdoo()
+        } catch (_: Exception) {}
+        delay(150)
+        try {
+            if (!showNewTicketForm) {
+                newTicketBtnFocusRequester.requestFocus()
+            }
+        } catch (_: Exception) {}
+    }
+
+    LaunchedEffect(showNewTicketForm) {
+        delay(120)
+        try {
+            if (showNewTicketForm) {
+                titleFocusRequester.requestFocus()
+            } else {
+                newTicketBtnFocusRequester.requestFocus()
+            }
+        } catch (_: Exception) {}
+    }
+
+    val submitTicketAction: () -> Unit = {
+        if (newTitle.isNotBlank() && newMessage.isNotBlank()) {
+            isSubmitting = true
+            scope.launch {
+                val result = com.example.model.SupportRepository.createTicketSuspend(newTitle.trim(), null, newMessage.trim())
+                isSubmitting = false
+                if (result.isSuccess) {
+                    newTitle = ""
+                    newMessage = ""
+                    showNewTicketForm = false
+                    Toast.makeText(context, context.getString(R.string.report_sent), Toast.LENGTH_SHORT).show()
+                } else {
+                    val err = result.exceptionOrNull()?.message ?: "Bilinmeyen hata"
+                    Toast.makeText(context, "Destek talebi iletilemedi: $err", Toast.LENGTH_LONG).show()
+                }
+            }
+        } else {
+            Toast.makeText(context, "Lütfen başlık ve mesaj giriniz.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .fillMaxHeight(if (isLandscape) 0.95f else 0.82f)
-            .padding(horizontal = 16.dp, vertical = if (isLandscape) 4.dp else 10.dp)
-            .padding(bottom = if (isLandscape) 6.dp else 28.dp)
+            .fillMaxHeight(if (isLandscape) 0.94f else 0.85f)
+            .padding(horizontal = 16.dp, vertical = if (isLandscape) 6.dp else 10.dp)
+            .padding(bottom = if (isLandscape) 8.dp else 28.dp)
+            .verticalScroll(rememberScrollState())
     ) {
+        // Başlık ve Kapat Butonu
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (isLandscape) 36.dp else 44.dp),
+                .height(if (isLandscape) 38.dp else 44.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1412,181 +1478,280 @@ fun SupportTicketsSheet(onClose: () -> Unit) {
                     )
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isLandscape && !showNewTicketForm) {
-                    Button(
-                        onClick = { showNewTicketForm = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF42A5F5)),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(stringResource(R.string.ticket_new_btn), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                }
-                IconButton(onClick = onClose, modifier = Modifier.size(if (isLandscape) 32.dp else 40.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close_desc), tint = Color.Gray)
-                }
+            IconButton(onClick = onClose, modifier = Modifier.size(if (isLandscape) 32.dp else 40.dp)) {
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close_desc), tint = Color.Gray)
             }
         }
+
         HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = if (isLandscape) 4.dp else 8.dp))
+
+        // Form kapalıyken: Hem Yatay (TV) hem Dikey için açıkça görünen ve kumanda ile seçilen Yeni Talep butonu
+        if (!showNewTicketForm) {
+            var isNewBtnFocused by remember { mutableStateOf(false) }
+            Button(
+                onClick = { showNewTicketForm = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (isLandscape) 40.dp else 46.dp)
+                    .focusRequester(newTicketBtnFocusRequester)
+                    .onFocusChanged { isNewBtnFocused = it.isFocused }
+                    .border(
+                        width = if (isNewBtnFocused) 2.5.dp else 1.dp,
+                        color = if (isNewBtnFocused) Color.White else Color(0xFF1E88E5),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && (keyEvent.key == Key.Enter || keyEvent.key == Key.DirectionCenter)) {
+                            showNewTicketForm = true
+                            true
+                        } else false
+                    },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isNewBtnFocused) RedPrimary else Color(0xFF1976D2)
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    stringResource(R.string.ticket_new_btn),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (isLandscape) 13.sp else 14.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(if (isLandscape) 6.dp else 10.dp))
+        }
 
         if (showNewTicketForm) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
-                    .padding(vertical = if (isLandscape) 2.dp else 8.dp),
+                    .padding(vertical = if (isLandscape) 2.dp else 6.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF263238)),
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(10.dp)
             ) {
-                Column(modifier = Modifier.padding(if (isLandscape) 10.dp else 12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            stringResource(R.string.ticket_new_btn),
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            fontSize = if (isLandscape) 13.sp else 14.sp
-                        )
-                        if (isLandscape) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(
-                                    onClick = { showNewTicketForm = false },
-                                    enabled = !isSubmitting,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                    modifier = Modifier.height(32.dp)
-                                ) {
-                                    Text(stringResource(R.string.close_desc), color = Color.Gray, fontSize = 12.sp)
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Button(
-                                    onClick = {
-                                        if (newTitle.isNotBlank() && newMessage.isNotBlank()) {
-                                            isSubmitting = true
-                                            scope.launch {
-                                                val result = com.example.model.SupportRepository.createTicketSuspend(newTitle.trim(), null, newMessage.trim())
-                                                isSubmitting = false
-                                                if (result.isSuccess) {
-                                                    newTitle = ""
-                                                    newMessage = ""
-                                                    showNewTicketForm = false
-                                                    Toast.makeText(context, context.getString(R.string.report_sent), Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    val err = result.exceptionOrNull()?.message ?: "Bilinmeyen hata"
-                                                    Toast.makeText(context, "Destek talebi iletilemedi: $err", Toast.LENGTH_LONG).show()
-                                                }
-                                            }
-                                        } else {
-                                            Toast.makeText(context, "Lütfen başlık ve mesaj giriniz.", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF42A5F5)),
-                                    enabled = !isSubmitting,
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-                                    modifier = Modifier.height(32.dp)
-                                ) {
-                                    if (isSubmitting) {
-                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                    }
-                                    Text(stringResource(R.string.report_send), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
+                Column(modifier = Modifier.padding(if (isLandscape) 10.dp else 14.dp)) {
+                    Text(
+                        stringResource(R.string.ticket_new_btn),
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = if (isLandscape) 14.sp else 15.sp
+                    )
+
                     Spacer(modifier = Modifier.height(if (isLandscape) 6.dp else 8.dp))
+
+                    // Başlık Alanı
                     OutlinedTextField(
                         value = newTitle,
                         onValueChange = { newTitle = it },
                         placeholder = { Text(stringResource(R.string.ticket_title_label), color = Color.Gray, fontSize = 12.sp) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF42A5F5), unfocusedBorderColor = Color.DarkGray),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = {
+                            try {
+                                messageFocusRequester.requestFocus()
+                            } catch (_: Exception) {}
+                        }),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(titleFocusRequester)
+                            .focusProperties {
+                                down = messageFocusRequester
+                            }
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionDown, Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
+                                            try {
+                                                messageFocusRequester.requestFocus()
+                                            } catch (_: Exception) {}
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                } else false
+                            },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF42A5F5),
+                            unfocusedBorderColor = Color.DarkGray
+                        ),
                         enabled = !isSubmitting
                     )
+
                     Spacer(modifier = Modifier.height(if (isLandscape) 6.dp else 8.dp))
+
+                    // Mesaj Alanı
                     OutlinedTextField(
                         value = newMessage,
                         onValueChange = { newMessage = it },
                         placeholder = { Text(stringResource(R.string.ticket_msg_label), color = Color.Gray, fontSize = 12.sp) },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            try {
+                                sendButtonFocusRequester.requestFocus()
+                            } catch (_: Exception) {}
+                        }),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(if (isLandscape) 68.dp else 90.dp),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color(0xFF42A5F5), unfocusedBorderColor = Color.DarkGray),
+                            .height(if (isLandscape) 72.dp else 90.dp)
+                            .focusRequester(messageFocusRequester)
+                            .focusProperties {
+                                up = titleFocusRequester
+                                down = sendButtonFocusRequester
+                            }
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.key) {
+                                        Key.DirectionUp -> {
+                                            try {
+                                                titleFocusRequester.requestFocus()
+                                            } catch (_: Exception) {}
+                                            true
+                                        }
+                                        Key.DirectionDown -> {
+                                            try {
+                                                sendButtonFocusRequester.requestFocus()
+                                            } catch (_: Exception) {}
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                } else false
+                            },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF42A5F5),
+                            unfocusedBorderColor = Color.DarkGray
+                        ),
                         enabled = !isSubmitting
                     )
-                    if (!isLandscape) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            TextButton(
-                                onClick = { showNewTicketForm = false },
-                                enabled = !isSubmitting
-                            ) {
-                                Text(stringResource(R.string.close_desc), color = Color.Gray)
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    if (newTitle.isNotBlank() && newMessage.isNotBlank()) {
-                                        isSubmitting = true
-                                        scope.launch {
-                                            val result = com.example.model.SupportRepository.createTicketSuspend(newTitle.trim(), null, newMessage.trim())
-                                            isSubmitting = false
-                                            if (result.isSuccess) {
-                                                newTitle = ""
-                                                newMessage = ""
-                                                showNewTicketForm = false
-                                                Toast.makeText(context, context.getString(R.string.report_sent), Toast.LENGTH_SHORT).show()
-                                            } else {
-                                                val err = result.exceptionOrNull()?.message ?: "Bilinmeyen hata"
-                                                Toast.makeText(context, "Destek talebi iletilemedi: $err", Toast.LENGTH_LONG).show()
-                                            }
-                                        }
-                                    } else {
-                                        Toast.makeText(context, "Lütfen başlık ve mesaj giriniz.", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF42A5F5)),
-                                enabled = !isSubmitting
-                            ) {
-                                if (isSubmitting) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                    Spacer(modifier = Modifier.width(6.dp))
+
+                    Spacer(modifier = Modifier.height(if (isLandscape) 8.dp else 12.dp))
+
+                    // Butonlar Alanı: Hem Yatay (TV) hem Dikey için açıkça görünür ve TV kumandası odaklı
+                    Row(
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        var isCancelFocused by remember { mutableStateOf(false) }
+                        OutlinedButton(
+                            onClick = { showNewTicketForm = false },
+                            enabled = !isSubmitting,
+                            modifier = Modifier
+                                .height(38.dp)
+                                .focusRequester(cancelButtonFocusRequester)
+                                .onFocusChanged { isCancelFocused = it.isFocused }
+                                .focusProperties {
+                                    up = messageFocusRequester
+                                    right = sendButtonFocusRequester
                                 }
-                                Text(stringResource(R.string.report_send), color = Color.White, fontWeight = FontWeight.Bold)
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp -> {
+                                                try {
+                                                    messageFocusRequester.requestFocus()
+                                                } catch (_: Exception) {}
+                                                true
+                                            }
+                                            Key.DirectionRight -> {
+                                                try {
+                                                    sendButtonFocusRequester.requestFocus()
+                                                } catch (_: Exception) {}
+                                                true
+                                            }
+                                            Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
+                                                showNewTicketForm = false
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                },
+                            border = BorderStroke(
+                                if (isCancelFocused) 2.dp else 1.dp,
+                                if (isCancelFocused) Color.White else Color.Gray
+                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (isCancelFocused) Color.White.copy(alpha = 0.25f) else Color.Transparent
+                            )
+                        ) {
+                            Text(
+                                stringResource(R.string.close_desc),
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = if (isCancelFocused) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        var isSendFocused by remember { mutableStateOf(false) }
+                        Button(
+                            onClick = { submitTicketAction() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSendFocused) RedPrimary else Color(0xFF1976D2)
+                            ),
+                            enabled = !isSubmitting,
+                            modifier = Modifier
+                                .height(38.dp)
+                                .focusRequester(sendButtonFocusRequester)
+                                .onFocusChanged { isSendFocused = it.isFocused }
+                                .focusProperties {
+                                    up = messageFocusRequester
+                                    left = cancelButtonFocusRequester
+                                }
+                                .onPreviewKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.key) {
+                                            Key.DirectionUp -> {
+                                                try {
+                                                    messageFocusRequester.requestFocus()
+                                                } catch (_: Exception) {}
+                                                true
+                                            }
+                                            Key.DirectionLeft -> {
+                                                try {
+                                                    cancelButtonFocusRequester.requestFocus()
+                                                } catch (_: Exception) {}
+                                                true
+                                            }
+                                            Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
+                                                submitTicketAction()
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .border(
+                                    2.dp,
+                                    if (isSendFocused) Color.White else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                        ) {
+                            if (isSubmitting) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(6.dp))
                             }
+                            Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(stringResource(R.string.report_send), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                     }
                 }
             }
-        } else if (!isLandscape) {
-            Button(
-                onClick = { showNewTicketForm = true },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF42A5F5))
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.ticket_new_btn), color = Color.White, fontWeight = FontWeight.Bold)
-            }
         }
 
-        if (!isLandscape || !showNewTicketForm) {
-            Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 8.dp))
-
+        if (!showNewTicketForm) {
             if (tickets.isEmpty()) {
-                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 28.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.SupportAgent, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(if (isLandscape) 36.dp else 48.dp))
                         Spacer(modifier = Modifier.height(6.dp))
@@ -1595,15 +1760,23 @@ fun SupportTicketsSheet(onClose: () -> Unit) {
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 10.dp)
                 ) {
-                    items(tickets.size) { index ->
-                        val ticket = tickets[index]
+                    tickets.forEach { ticket ->
+                        var isCardFocused by remember { mutableStateOf(false) }
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { isCardFocused = it.isFocused }
+                                .border(
+                                    1.5.dp,
+                                    if (isCardFocused) Color.White else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .focusable(),
+                            colors = CardDefaults.cardColors(containerColor = if (isCardFocused) Color(0xFF2E3B4E) else Color(0xFF1E1E1E)),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Column(modifier = Modifier.padding(if (isLandscape) 10.dp else 12.dp)) {
@@ -1644,7 +1817,7 @@ fun SupportTicketsSheet(onClose: () -> Unit) {
                                             .fillMaxWidth()
                                             .background(Color(0xFF263238), RoundedCornerShape(6.dp))
                                             .padding(8.dp)
-                                        ) {
+                                    ) {
                                         Icon(Icons.Default.SupportAgent, contentDescription = null, tint = Color(0xFF69F0AE), modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Column {
