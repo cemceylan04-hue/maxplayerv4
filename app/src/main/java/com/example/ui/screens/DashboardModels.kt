@@ -4,6 +4,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
@@ -369,7 +370,9 @@ data class MatchFixture(
     val channelKeywords: List<String>,
     val homeScore: String = "",
     val awayScore: String = "",
-    val broadcastChannel: String = "beIN Sports 1"
+    val broadcastChannel: String = "beIN Sports 1",
+    val isCompleted: Boolean = false,
+    val rawDateMs: Long = 0L
 )
 
 fun getDefaultFixtures(): List<MatchFixture> {
@@ -474,18 +477,17 @@ fun getDefaultFixtures(): List<MatchFixture> {
 }
 
 fun getCombinedFixtures(espnFixtures: List<MatchFixture>): List<MatchFixture> {
-    val defaults = getDefaultFixtures()
-    if (espnFixtures.isEmpty()) return defaults
-    val result = espnFixtures.toMutableList()
-    for (d in defaults) {
-        val alreadyPresent = result.any {
-            it.homeTeam.contains(d.homeTeam, ignoreCase = true) || it.awayTeam.contains(d.awayTeam, ignoreCase = true)
+    if (espnFixtures.isNotEmpty()) {
+        val distinct = espnFixtures.distinctBy {
+            if (it.id.isNotBlank()) it.id else "${it.homeTeam}_${it.awayTeam}_${it.dateText}"
         }
-        if (!alreadyPresent) {
-            result.add(d)
-        }
+        return distinct.sortedWith(
+            compareByDescending<MatchFixture> { it.isLive }
+                .thenBy { it.isCompleted }
+                .thenBy { if (!it.isCompleted) it.rawDateMs else -it.rawDateMs }
+        )
     }
-    return result
+    return getDefaultFixtures()
 }
 
 fun fetchTrailerKey(tmdbId: String): String? {
@@ -640,13 +642,29 @@ fun parseEspnFixtures(jsonString: String, leagueName: String = "Trendyol Süper 
 
             val dateStr = event.optString("date")
             var dateText = dateStr
+            var rawDateMs = 0L
             try {
                 val sdfIn = SimpleDateFormat("yyyy-MM-dd'T'HH:mm'Z'", Locale.US)
                 sdfIn.timeZone = TimeZone.getTimeZone("UTC")
                 val dateObj = sdfIn.parse(dateStr)
                 if (dateObj != null) {
-                    val sdfOut = SimpleDateFormat("dd MMM HH:mm", Locale("tr"))
-                    dateText = sdfOut.format(dateObj)
+                    rawDateMs = dateObj.time
+                    val nowCal = Calendar.getInstance()
+                    val matchCal = Calendar.getInstance().apply { time = dateObj }
+                    val diffDays = matchCal.get(Calendar.DAY_OF_YEAR) - nowCal.get(Calendar.DAY_OF_YEAR)
+                    val diffYears = matchCal.get(Calendar.YEAR) - nowCal.get(Calendar.YEAR)
+                    val timeStr = SimpleDateFormat("HH:mm", Locale("tr")).format(dateObj)
+
+                    dateText = if (diffYears == 0) {
+                        when (diffDays) {
+                            0 -> "Bugün $timeStr"
+                            1 -> "Yarın $timeStr"
+                            -1 -> "Dün $timeStr"
+                            else -> SimpleDateFormat("dd MMM HH:mm", Locale("tr")).format(dateObj)
+                        }
+                    } else {
+                        SimpleDateFormat("dd MMM HH:mm", Locale("tr")).format(dateObj)
+                    }
                 }
             } catch (e: Exception) {}
 
@@ -661,13 +679,16 @@ fun parseEspnFixtures(jsonString: String, leagueName: String = "Trendyol Süper 
                 val detail = type?.optString("detail")
                 displayDate = if (!detail.isNullOrEmpty()) "CANLI - $detail" else "CANLI"
             } else if (isCompleted) {
-                displayDate = "MS (Bitti)"
+                val detail = type?.optString("detail")
+                displayDate = if (!detail.isNullOrEmpty() && detail.contains("FT", ignoreCase = true)) "MS (Bitti)" else (detail ?: "MS")
             }
 
             val channelKeywords = when {
                 leagueName.contains("Süper Lig", ignoreCase = true) -> listOf("BeIN Sports 1", "BeIN 1", "bein", "Spor")
                 leagueName.contains("Şampiyonlar", ignoreCase = true) -> listOf("TRT 1", "TRT Spor", "Exxen", "Spor")
                 leagueName.contains("Avrupa", ignoreCase = true) -> listOf("TRT 1", "TRT Spor", "Exxen", "Spor")
+                leagueName.contains("Konferans", ignoreCase = true) -> listOf("TRT 1", "TRT Spor", "Exxen", "Spor")
+                leagueName.contains("Premier", ignoreCase = true) -> listOf("BeIN Sports 3", "BeIN Sports", "beIN", "Spor")
                 else -> listOf("Spor", "Sports", "TRT", "S Sport", "BeIN")
             }
 
@@ -675,6 +696,8 @@ fun parseEspnFixtures(jsonString: String, leagueName: String = "Trendyol Süper 
                 leagueName.contains("Süper Lig", ignoreCase = true) -> "beIN Sports 1 HD"
                 leagueName.contains("Şampiyonlar", ignoreCase = true) -> "TRT 1 / Exxen"
                 leagueName.contains("Avrupa", ignoreCase = true) -> "TRT Spor / Exxen"
+                leagueName.contains("Konferans", ignoreCase = true) -> "TRT Spor"
+                leagueName.contains("Premier", ignoreCase = true) -> "beIN Sports 3 HD"
                 else -> "Spor Kanalı"
             }
 
@@ -691,7 +714,9 @@ fun parseEspnFixtures(jsonString: String, leagueName: String = "Trendyol Süper 
                     channelKeywords = channelKeywords,
                     homeScore = homeScore,
                     awayScore = awayScore,
-                    broadcastChannel = broadcastChannel
+                    broadcastChannel = broadcastChannel,
+                    isCompleted = isCompleted,
+                    rawDateMs = rawDateMs
                 )
             )
         }

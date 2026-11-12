@@ -2,7 +2,11 @@ package com.example.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import java.util.Date
+import java.util.TimeZone
+import org.json.JSONObject
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
@@ -231,33 +235,77 @@ fun DashboardScreen(
             isFixturesRefreshing = true
             withContext(Dispatchers.IO) {
                 try {
-                    val calEspn = Calendar.getInstance()
-                    calEspn.add(Calendar.DAY_OF_YEAR, -2)
-                    val sdfEspn = SimpleDateFormat("yyyyMMdd", Locale.US)
-                    val dateStart = sdfEspn.format(calEspn.time)
-                    calEspn.add(Calendar.DAY_OF_YEAR, 30)
-                    val dateEnd = sdfEspn.format(calEspn.time)
-
                     val leaguesToFetch = listOf(
                         "tur.1" to "Trendyol Süper Lig",
                         "uefa.champions" to "UEFA Şampiyonlar Ligi",
-                        "uefa.europa" to "UEFA Avrupa Ligi"
+                        "uefa.europa" to "UEFA Avrupa Ligi",
+                        "uefa.europa.conf" to "UEFA Konferans Ligi",
+                        "eng.1" to "İngiltere Premier Lig"
                     )
 
                     val allFetched = mutableListOf<MatchFixture>()
                     for ((leagueCode, leagueName) in leaguesToFetch) {
                         try {
-                            val espnUrl = "https://site.api.espn.com/apis/site/v2/sports/soccer/$leagueCode/scoreboard?dates=$dateStart-$dateEnd&limit=100"
-                            val espnConn = URL(espnUrl).openConnection() as HttpURLConnection
-                            espnConn.connectTimeout = 7000
-                            espnConn.readTimeout = 7000
+                            // 1. Mevcut / güncel tur maçlarını çek
+                            val espnUrl = "https://site.api.espn.com/apis/site/v2/sports/soccer/$leagueCode/scoreboard"
+                            val espnConn = (URL(espnUrl).openConnection() as HttpURLConnection).apply {
+                                setRequestProperty("User-Agent", "Mozilla/5.0")
+                                connectTimeout = 6000
+                                readTimeout = 6000
+                            }
                             if (espnConn.responseCode == 200) {
                                 val espnJson = espnConn.inputStream.bufferedReader().use { it.readText() }
                                 val parsed = parseEspnFixtures(espnJson, leagueName)
                                 allFetched.addAll(parsed)
+
+                                // 2. Gelecek maç günlerini takvimden (calendar) tespit edip çek
+                                try {
+                                    val rootJson = JSONObject(espnJson)
+                                    val leaguesArr = rootJson.optJSONArray("leagues")
+                                    val calArr = leaguesArr?.optJSONObject(0)?.optJSONArray("calendar")
+                                    if (calArr != null) {
+                                        val nowIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
+                                            timeZone = TimeZone.getTimeZone("UTC")
+                                        }.format(Date())
+
+                                        val upcomingDateStrings = mutableListOf<String>()
+                                        for (ci in 0 until calArr.length()) {
+                                            val cVal = calArr.opt(ci)
+                                            val cStr = when (cVal) {
+                                                is String -> cVal
+                                                is JSONObject -> cVal.optString("date", cVal.optString("startDate"))
+                                                else -> ""
+                                            }
+                                            if (cStr.isNotBlank() && cStr > nowIso) {
+                                                val cleanD = cStr.substringBefore("T").replace("-", "")
+                                                if (cleanD.length == 8 && !upcomingDateStrings.contains(cleanD)) {
+                                                    upcomingDateStrings.add(cleanD)
+                                                }
+                                            }
+                                        }
+
+                                        for (targetDate in upcomingDateStrings.take(2)) {
+                                            try {
+                                                val upUrl = "https://site.api.espn.com/apis/site/v2/sports/soccer/$leagueCode/scoreboard?dates=$targetDate"
+                                                val upConn = (URL(upUrl).openConnection() as HttpURLConnection).apply {
+                                                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                                                    connectTimeout = 5000
+                                                    readTimeout = 5000
+                                                }
+                                                if (upConn.responseCode == 200) {
+                                                    val upJson = upConn.inputStream.bufferedReader().use { it.readText() }
+                                                    val upParsed = parseEspnFixtures(upJson, leagueName)
+                                                    allFetched.addAll(upParsed)
+                                                }
+                                                upConn.disconnect()
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
+                                } catch (_: Exception) {}
                             }
+                            espnConn.disconnect()
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            Log.e("DashboardScreen", "Error fetching fixtures for $leagueCode: ${e.message}")
                         }
                     }
 
@@ -268,7 +316,7 @@ fun DashboardScreen(
                         }
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("DashboardScreen", "refreshFixtures error", e)
                 } finally {
                     withContext(Dispatchers.Main) {
                         isFixturesRefreshing = false
@@ -365,12 +413,7 @@ fun DashboardScreen(
         refreshMediaData(false)
     }
 
-    // Automatic Fetch when navigating to tabs if empty
-    LaunchedEffect(selectedTabIndex) {
-        if (selectedTabIndex in 2..3 && tmdbWeeklyItems.isEmpty()) {
-            refreshMediaData(false)
-        }
-    }
+
 
     val currentType: ItemType? = remember(selectedTabIndex) {
         when (selectedTabIndex) {
@@ -462,10 +505,12 @@ fun DashboardScreen(
             } else {
                 com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex]
             }
-            if (saved != null && displayGroups.contains(saved)) {
+            val isSavedLocked = saved != null && com.example.model.ParentalControlManager.isGroupLocked(saved)
+            if (saved != null && displayGroups.contains(saved) && !isSavedLocked) {
                 selectedGroup = saved
-            } else if (selectedGroup == null || !displayGroups.contains(selectedGroup)) {
-                selectedGroup = if (displayGroups.size > 1) displayGroups[1] else displayGroups.first()
+            } else if (selectedGroup == null || !displayGroups.contains(selectedGroup) || com.example.model.ParentalControlManager.isGroupLocked(selectedGroup ?: "")) {
+                val nonLockedGroup = displayGroups.firstOrNull { !com.example.model.ParentalControlManager.isGroupLocked(it) }
+                selectedGroup = nonLockedGroup ?: if (displayGroups.size > 1) displayGroups[1] else displayGroups.first()
             }
         } else if (selectedTabIndex == 4) {
             val saved = com.example.model.PlayerRepository.lastDashboardGroupByTab[selectedTabIndex]
@@ -573,20 +618,21 @@ fun DashboardScreen(
                 }
             }
             2 -> {
-                if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                val rawMovies = if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
                     visibleItems.filter {
                         it.type == ItemType.MOVIE &&
                             com.example.model.FavoritesManager.isMovieFavorite(it) &&
                             it.title.contains(searchQuery, ignoreCase = true)
-                    }.distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
+                    }
                 } else {
                     PlaylistRepository.getItemsForGroup(selectedGroup, ItemType.MOVIE).filter {
                         it.title.contains(searchQuery, ignoreCase = true)
                     }
                 }
+                rawMovies.distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
             }
             3 -> {
-                if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
+                val rawSeries = if (selectedGroup == com.example.model.FavoritesManager.FAVORITES_CATEGORY_NAME) {
                     visibleItems.filter {
                         it.type == ItemType.SERIES &&
                             com.example.model.FavoritesManager.isSeriesFavorite(it) &&
@@ -597,6 +643,7 @@ fun DashboardScreen(
                         it.title.contains(searchQuery, ignoreCase = true) || (it.seriesName?.contains(searchQuery, ignoreCase = true) == true)
                     }
                 }
+                rawSeries.distinctBy { it.url.ifBlank { it.title } }
             }
             4 -> {
                 if (favoriteUrls.isEmpty() && favoriteSeriesNames.isEmpty() && favoriteMovieTitles.isEmpty()) {
@@ -1019,6 +1066,9 @@ fun DashboardScreen(
                                         if (keyEvent.type == KeyEventType.KeyDown) {
                                             if (keyEvent.key == Key.DirectionDown) {
                                                 if (selectedTabIndex in 1..3 && displayGroups.isNotEmpty()) {
+                                                    try {
+                                                        selectedCategoryFocusRequester.requestFocus()
+                                                    } catch (_: Exception) {}
                                                     scope.launch {
                                                         val selIdx = displayGroups.indexOf(selectedGroup).takeIf { it >= 0 } ?: 0
                                                         if (selIdx > 0) {
@@ -1026,10 +1076,12 @@ fun DashboardScreen(
                                                         } else {
                                                             categoryListState.scrollToItem(0)
                                                         }
-                                                        kotlinx.coroutines.delay(20)
-                                                        try {
-                                                            selectedCategoryFocusRequester.requestFocus()
-                                                        } catch (_: Exception) {}
+                                                        for (waitMs in listOf(20L, 80L, 160L)) {
+                                                            kotlinx.coroutines.delay(waitMs)
+                                                            try {
+                                                                selectedCategoryFocusRequester.requestFocus()
+                                                            } catch (_: Exception) {}
+                                                        }
                                                     }
                                                     true
                                                 } else {
@@ -1105,13 +1157,15 @@ fun DashboardScreen(
             // Support Notification Banner
             val notification by SupportRepository.unreadNotification.collectAsState()
             if (notification != null) {
+                val notif = notification!!
+                var isBannerReadChecked by remember(notif.id) { mutableStateOf(false) }
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 6.dp)
                         .clickable {
                             showSupportSheet = true
-                            SupportRepository.dismissNotification()
+                            SupportRepository.dismissNotification(notif)
                         },
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF1B5E20)),
                     elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
@@ -1127,13 +1181,43 @@ fun DashboardScreen(
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(stringResource(R.string.notification_banner_msg), color = Color.LightGray, fontSize = 10.sp)
                         }
+
+                        // Okundu Kutusu
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .padding(horizontal = 6.dp)
+                                .clickable {
+                                    isBannerReadChecked = true
+                                    SupportRepository.markTicketReplyAsRead(notif)
+                                }
+                        ) {
+                            Checkbox(
+                                checked = isBannerReadChecked,
+                                onCheckedChange = { checked ->
+                                    isBannerReadChecked = checked
+                                    if (checked) {
+                                        SupportRepository.markTicketReplyAsRead(notif)
+                                    }
+                                },
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = Color(0xFF69F0AE),
+                                    uncheckedColor = Color.White,
+                                    checkmarkColor = Color.Black
+                                ),
+                                modifier = Modifier.size(24.dp).focusable()
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text("Okundu", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
                         TextButton(onClick = {
                             showSupportSheet = true
-                            SupportRepository.dismissNotification()
+                            SupportRepository.dismissNotification(notif)
                         }) {
                             Text(stringResource(R.string.view_ticket_btn), color = Color(0xFF69F0AE), fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         }
-                        IconButton(onClick = { SupportRepository.dismissNotification() }, modifier = Modifier.size(24.dp)) {
+                        IconButton(onClick = { SupportRepository.dismissNotification(notif) }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.Close, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
                         }
                     }
@@ -1417,7 +1501,8 @@ fun DashboardScreen(
                                 sidePanelGroupToUnlock = group
                             },
                             currentTabFocusRequester = currentTabFocusRequester,
-                            categoryFocusRequester = selectedCategoryFocusRequester
+                            categoryFocusRequester = selectedCategoryFocusRequester,
+                            categoryListState = categoryListState
                         )
                     }
 
@@ -2660,16 +2745,9 @@ fun DashboardScreen(
         }
     }
 
-    // Support Tickets Bottom Sheet
+    // Support Tickets Fullscreen Dialog
     if (showSupportSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showSupportSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surface,
-            dragHandle = null
-        ) {
-            SupportTicketsSheet(onClose = { showSupportSheet = false })
-        }
+        SupportTicketsSheet(onClose = { showSupportSheet = false })
     }
 
     // All Fixtures Bottom Sheet

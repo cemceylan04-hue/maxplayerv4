@@ -1,5 +1,7 @@
 package com.example.model
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,8 +30,12 @@ data class SupportTicket(
 
 object SupportRepository {
     private const val TAG = "SupportRepository"
+    private const val PREFS_NAME = "support_prefs"
+    private const val KEY_READ_TICKET_KEYS = "read_ticket_keys"
     private const val CREATE_ENDPOINT = "https://maxxplayers.com/api/v1/support/create"
     private const val GET_ENDPOINT = "https://maxxplayers.com/api/v1/support/get"
+
+    private lateinit var prefs: SharedPreferences
 
     private val _tickets = MutableStateFlow<List<SupportTicket>>(emptyList())
     val tickets: StateFlow<List<SupportTicket>> = _tickets
@@ -43,22 +49,54 @@ object SupportRepository {
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError
 
-    // Deduplication tracker: prevents repeatedly notifying the same admin reply
-    private val notifiedReplyKeys = mutableSetOf<String>()
+    // Deduplication & Read tracker: prevents repeatedly notifying the same admin reply across app restarts
+    private val readReplyKeys = mutableSetOf<String>()
+
+    fun init(context: Context) {
+        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getStringSet(KEY_READ_TICKET_KEYS, emptySet()) ?: emptySet()
+        synchronized(readReplyKeys) {
+            readReplyKeys.clear()
+            readReplyKeys.addAll(saved)
+        }
+    }
+
+    fun isTicketReplyRead(ticket: SupportTicket): Boolean {
+        if (ticket.adminReply == null) return true
+        val key = "${ticket.id}_${ticket.adminReply.hashCode()}"
+        synchronized(readReplyKeys) {
+            return readReplyKeys.contains(key)
+        }
+    }
+
+    fun markTicketReplyAsRead(ticket: SupportTicket) {
+        if (ticket.adminReply == null) return
+        val key = "${ticket.id}_${ticket.adminReply.hashCode()}"
+        synchronized(readReplyKeys) {
+            readReplyKeys.add(key)
+            if (::prefs.isInitialized) {
+                prefs.edit().putStringSet(KEY_READ_TICKET_KEYS, readReplyKeys.toSet()).apply()
+            }
+        }
+        if (_unreadNotification.value?.id == ticket.id) {
+            _unreadNotification.value = null
+        }
+    }
+
+    fun unmarkTicketReplyAsRead(ticket: SupportTicket) {
+        if (ticket.adminReply == null) return
+        val key = "${ticket.id}_${ticket.adminReply.hashCode()}"
+        synchronized(readReplyKeys) {
+            readReplyKeys.remove(key)
+            if (::prefs.isInitialized) {
+                prefs.edit().putStringSet(KEY_READ_TICKET_KEYS, readReplyKeys.toSet()).apply()
+            }
+        }
+    }
 
     private fun getCurrentTime(): String {
         val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
         return sdf.format(Date())
-    }
-
-    fun createTicket(
-        title: String,
-        channelName: String?,
-        message: String
-    ) {
-        CoroutineScope(Dispatchers.IO).launch {
-            createTicketSuspend(title, channelName, message)
-        }
     }
 
     suspend fun createTicketSuspend(
@@ -131,6 +169,29 @@ object SupportRepository {
         } catch (e: Exception) {
             Log.e(TAG, "Support ticket creation failed: ${e.message}")
             Result.failure(Exception("Sunucuya bağlanılamadı. Lütfen internet bağlantınızı kontrol edin."))
+        }
+    }
+
+    fun createTicket(
+        title: String,
+        channelName: String?,
+        message: String,
+        onResult: ((Result<String>) -> Unit)? = null
+    ) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val res = createTicketSuspend(title, channelName, message)
+            withContext(Dispatchers.Main) {
+                onResult?.invoke(res)
+            }
+        }
+    }
+
+    fun syncTickets(onResult: ((Result<List<SupportTicket>>) -> Unit)? = null) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val res = syncTicketsFromOdoo()
+            withContext(Dispatchers.Main) {
+                onResult?.invoke(res)
+            }
         }
     }
 
@@ -219,9 +280,9 @@ object SupportRepository {
                     // Update state - clean if empty response
                     _tickets.value = list
 
-                    // Check for answered tickets that haven't been notified yet
+                    // Check for answered tickets that haven't been marked as read yet
                     val newlyAnswered = list.firstOrNull { ticket ->
-                        ticket.adminReply != null && !notifiedReplyKeys.contains("${ticket.id}_${ticket.adminReply.hashCode()}")
+                        ticket.adminReply != null && !isTicketReplyRead(ticket)
                     }
 
                     if (newlyAnswered != null) {
@@ -259,8 +320,8 @@ object SupportRepository {
 
     fun dismissNotification(ticket: SupportTicket? = null) {
         val target = ticket ?: _unreadNotification.value
-        if (target?.adminReply != null) {
-            notifiedReplyKeys.add("${target.id}_${target.adminReply.hashCode()}")
+        if (target != null) {
+            markTicketReplyAsRead(target)
         }
         _unreadNotification.value = null
     }

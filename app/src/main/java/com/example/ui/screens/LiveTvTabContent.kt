@@ -87,6 +87,7 @@ fun LiveTvTabContent(
     onRequestUnlock: (String) -> Unit = {},
     currentTabFocusRequester: FocusRequester? = null,
     categoryFocusRequester: FocusRequester? = null,
+    categoryListState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -103,7 +104,12 @@ fun LiveTvTabContent(
         val found = if (!targetUrl.isNullOrBlank()) {
             currentTabItems.find { it.url == targetUrl }
         } else null
-        found ?: com.example.model.PlayerRepository.lastPlayedLiveChannel ?: currentTabItems.firstOrNull()
+        val candidate = found ?: com.example.model.PlayerRepository.lastPlayedLiveChannel ?: currentTabItems.firstOrNull()
+        if (candidate != null && com.example.model.ParentalControlManager.isItemLocked(candidate)) {
+            currentTabItems.firstOrNull { !com.example.model.ParentalControlManager.isItemLocked(it) } ?: candidate
+        } else {
+            candidate
+        }
     }
 
     val initialScrollIndex = remember(initialChannel, currentTabItems) {
@@ -113,13 +119,13 @@ fun LiveTvTabContent(
         if (activeIdx >= 0) (activeIdx - 2).coerceAtLeast(0) else 0
     }
 
-    val categoryListState = rememberLazyListState()
     val channelListState = rememberLazyListState(initialFirstVisibleItemIndex = initialScrollIndex)
     val activeChannelFocusRequester = remember { FocusRequester() }
     val miniPlayerFocusRequester = remember { FocusRequester() }
     val selectedCategoryFocusRequester = categoryFocusRequester ?: remember { FocusRequester() }
 
     var categoryToUnlock by remember { mutableStateOf<String?>(null) }
+    var channelToUnlock by remember { mutableStateOf<M3uItem?>(null) }
 
     if (categoryToUnlock != null) {
         val grp = categoryToUnlock
@@ -142,6 +148,26 @@ fun LiveTvTabContent(
         )
     }
 
+    if (channelToUnlock != null) {
+        val ch = channelToUnlock
+        com.example.ui.components.PinUnlockDialog(
+            title = ch?.title ?: "Kilitli Kanal",
+            subtitle = "Yetişkin yayını izlemek için PIN girin",
+            onUnlock = {
+                val targetCh = ch
+                channelToUnlock = null
+                if (targetCh != null) {
+                    val targetGroup = targetCh.group ?: selectedGroup
+                    if (!targetGroup.isNullOrBlank()) {
+                        com.example.model.ParentalControlManager.unlockCategoryTemporarily(targetGroup)
+                    }
+                    onPlayChannel(targetCh, currentTabItems)
+                }
+            },
+            onDismiss = { channelToUnlock = null }
+        )
+    }
+
     // O anda mini oynatıcıda ve EPG panelinde gösterilen aktif canlı kanal
     var selectedLiveChannel by remember(initialChannel) {
         mutableStateOf(initialChannel)
@@ -155,7 +181,12 @@ fun LiveTvTabContent(
                 currentTabItems.find { it.url == targetUrl }
             } else null
 
-            val targetChannel = matching ?: currentTabItems.find { it.url == selectedLiveChannel?.url } ?: currentTabItems.firstOrNull()
+            val candidateChannel = matching ?: currentTabItems.find { it.url == selectedLiveChannel?.url } ?: currentTabItems.firstOrNull()
+            val targetChannel = if (candidateChannel != null && com.example.model.ParentalControlManager.isItemLocked(candidateChannel)) {
+                currentTabItems.firstOrNull { !com.example.model.ParentalControlManager.isItemLocked(it) } ?: candidateChannel
+            } else {
+                candidateChannel
+            }
             if (targetChannel != null) {
                 selectedLiveChannel = targetChannel
                 val activeIdx = currentTabItems.indexOfFirst { it.url == targetChannel.url }
@@ -198,10 +229,19 @@ fun LiveTvTabContent(
         }
     }
 
-    // Seçili kanal değiştikçe mini player stream'i hazırla ve oynat (150ms debounce ile seri geçişlerde kasma/donma yapmaz)
+    // Seçili kanal değiştikçe mini player stream'i hazırla ve oynat (Kilitli/yetişkin kanalları şifre girmeden otomatik OYNATMA!)
     LaunchedEffect(selectedLiveChannel?.url) {
         val streamUrl = selectedLiveChannel?.url
-        if (!streamUrl.isNullOrBlank()) {
+        val channel = selectedLiveChannel
+        if (!streamUrl.isNullOrBlank() && channel != null) {
+            val isLocked = com.example.model.ParentalControlManager.isItemLocked(channel)
+            if (isLocked) {
+                try {
+                    exoPlayer.stop()
+                    exoPlayer.clearMediaItems()
+                } catch (_: Exception) {}
+                return@LaunchedEffect
+            }
             delay(150)
             try {
                 exoPlayer.stop()
@@ -444,7 +484,11 @@ fun LiveTvTabContent(
                                 com.example.model.PlayerRepository.lastPlayedLiveChannel = ch
                                 com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = ch.url
                                 com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = ch.group
-                                onPlayChannel(ch, currentTabItems)
+                                if (com.example.model.ParentalControlManager.isItemLocked(ch)) {
+                                    channelToUnlock = ch
+                                } else {
+                                    onPlayChannel(ch, currentTabItems)
+                                }
                             }
                         }
                     )
@@ -496,7 +540,11 @@ fun LiveTvTabContent(
                         com.example.model.PlayerRepository.lastPlayedLiveChannel = ch
                         com.example.model.PlayerRepository.lastPlayedLiveChannelUrl = ch.url
                         com.example.model.PlayerRepository.lastPlayedLiveChannelGroup = selectedGroup
-                        onPlayChannel(ch, currentTabItems)
+                        if (com.example.model.ParentalControlManager.isItemLocked(ch)) {
+                            channelToUnlock = ch
+                        } else {
+                            onPlayChannel(ch, currentTabItems)
+                        }
                     }
                 }
             )
@@ -1133,27 +1181,75 @@ private fun LiveMiniPlayerCard(
         shape = RoundedCornerShape(14.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Video Görüntüsü (PlayerView)
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        player = exoPlayer
-                        useController = false
-                        isFocusable = false
-                        isFocusableInTouchMode = false
-                        descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                        layoutParams = FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
+            val isLocked = channel != null && com.example.model.ParentalControlManager.isItemLocked(channel)
+
+            if (isLocked) {
+                // Kilitli / Yetişkin Kanal Kalkanı
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF0F141C)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = RedPrimary.copy(alpha = 0.2f),
+                            border = BorderStroke(1.5.dp, RedPrimary),
+                            modifier = Modifier.size(54.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Kilitli Kanal",
+                                    tint = RedPrimary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = com.example.model.ParentalControlManager.maskTitle(channel?.title ?: "Yetişkin Kanal"),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Yetişkin Yayını • İzlemek için PIN Girin",
+                            color = Color(0xFFB0BEC5),
+                            fontSize = 11.sp
                         )
                     }
-                },
-                update = { pv ->
-                    pv.player = exoPlayer
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+                }
+            } else {
+                // Video Görüntüsü (PlayerView)
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            useController = false
+                            isFocusable = false
+                            isFocusableInTouchMode = false
+                            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                            setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                    },
+                    update = { pv ->
+                        pv.player = exoPlayer
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
             // Üst Sol Kanal Rozeti (Örn: TRT 1 CANLI)
             Row(

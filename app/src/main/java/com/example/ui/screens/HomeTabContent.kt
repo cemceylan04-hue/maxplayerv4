@@ -318,22 +318,66 @@ fun HomeMatchFixturesPanel(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (isRefreshing) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
-                            strokeWidth = 1.5.dp,
+                            modifier = Modifier.size(13.dp),
+                            strokeWidth = 1.6.dp,
                             color = CyanAccent
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                     }
+
+                    // Güncelle / Yenile Butonu
+                    var isRefreshFocused by remember { mutableStateOf(false) }
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF132F4C),
-                        border = BorderStroke(0.5.dp, CyanAccent.copy(alpha = 0.5f)),
-                        modifier = Modifier.clickable { onShowAll() }
+                        color = if (isRefreshFocused) CyanAccent.copy(alpha = 0.35f) else Color(0xFF132F4C),
+                        border = BorderStroke(
+                            width = if (isRefreshFocused) 1.5.dp else 0.5.dp,
+                            color = if (isRefreshFocused) Color.White else CyanAccent.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier
+                            .clickable(enabled = !isRefreshing) { onRefresh() }
+                            .onFocusChanged { isRefreshFocused = it.isFocused }
+                            .focusable()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Fikstürü Güncelle",
+                                tint = if (isRefreshFocused) Color.White else CyanAccent,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "GÜNCELLE",
+                                color = if (isRefreshFocused) Color.White else CyanAccent,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    var isShowAllFocused by remember { mutableStateOf(false) }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isShowAllFocused) CyanAccent.copy(alpha = 0.35f) else Color(0xFF132F4C),
+                        border = BorderStroke(
+                            width = if (isShowAllFocused) 1.5.dp else 0.5.dp,
+                            color = if (isShowAllFocused) Color.White else CyanAccent.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier
+                            .clickable { onShowAll() }
+                            .onFocusChanged { isShowAllFocused = it.isFocused }
+                            .focusable()
                     ) {
                         Text(
                             text = "TÜMÜ ›",
-                            color = CyanAccent,
-                            fontSize = 10.sp,
+                            color = if (isShowAllFocused) Color.White else CyanAccent,
+                            fontSize = 9.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                         )

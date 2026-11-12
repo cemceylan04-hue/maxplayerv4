@@ -94,10 +94,30 @@ fun MediaCatalogTabContent(
         currentTabItems.firstOrNull()
     }
 
-    // Dizi sekmesi için gruplandırma
-    val seriesGroups = remember(currentTabItems) {
+    // Filmler için kopyaları (aynı isimdeki 2-3 kopyayı) temizle
+    val displayMovies = remember(currentTabItems, isMovie) {
+        if (isMovie) {
+            currentTabItems.distinctBy { com.example.model.FavoritesManager.normalizeKey(it.title).ifBlank { it.url } }
+        } else {
+            emptyList()
+        }
+    }
+
+    // Dizi sekmesi için akıllı gruplandırma: Aynı isimdeki dizileri tek bir kart altında birleştirir (kopyaları önler)
+    val seriesGroups = remember(currentTabItems, isMovie) {
         if (!isMovie) {
-            currentTabItems.groupBy { it.seriesName ?: it.title }
+            val map = linkedMapOf<String, MutableList<M3uItem>>()
+            val displayNames = mutableMapOf<String, String>()
+            for (item in currentTabItems) {
+                val rawName = item.seriesName?.takeIf { it.isNotBlank() } ?: item.title
+                val normalizedKey = com.example.model.FavoritesManager.normalizeKey(rawName)
+                if (!displayNames.containsKey(normalizedKey)) {
+                    displayNames[normalizedKey] = rawName.trim().trimEnd('-', '–', '—', ':', '|', ' ')
+                }
+                val canonicalName = displayNames[normalizedKey] ?: rawName.trim()
+                map.getOrPut(canonicalName) { mutableListOf() }.add(item)
+            }
+            map
         } else {
             emptyMap()
         }
@@ -200,23 +220,24 @@ fun MediaCatalogTabContent(
             }
         }
 
-        // 3. ALT BLOK BAŞLIĞI: KATEGORİDEN GELEN İÇERİKLER
+        // 3. KATEGORİ BAŞLIĞI (Doğrudan seçilen kategori adı, Popüler etiketi yok)
         item(span = { GridItemSpan(maxLineSpan) }) {
+            val categoryTitle = selectedGroup?.takeIf { it.isNotBlank() } ?: (if (isMovie) "Filmler" else "Diziler")
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 4.dp),
+                    .padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "🔥",
+                        text = if (isMovie) "🎬" else "📺",
                         fontSize = 17.sp
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = selectedGroup ?: (if (isMovie) "Popüler Filmler" else "Popüler Diziler"),
+                        text = categoryTitle,
                         color = Color.White,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold
@@ -224,20 +245,13 @@ fun MediaCatalogTabContent(
                     if (currentTabItems.isNotEmpty()) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "(${currentTabItems.size})",
+                            text = if (isMovie) "(${displayMovies.size} Film)" else "(${seriesGroups.size} Dizi)",
                             color = TextMuted,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                     }
                 }
-
-                Text(
-                    text = "Tümünü Gör ›",
-                    color = TextMuted,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
             }
         }
 
@@ -287,7 +301,7 @@ fun MediaCatalogTabContent(
                 }
             }
         } else if (isMovie) {
-            itemsIndexed(currentTabItems, key = { idx, it -> "m_${idx}_${it.url.ifBlank { it.title }}" }) { _, movie ->
+            itemsIndexed(displayMovies, key = { idx, it -> "m_${idx}_${it.url.ifBlank { it.title }}" }) { _, movie ->
                 var isAtLeftEdge by remember { mutableStateOf(false) }
                 val cardModifier = Modifier
                     .onGloballyPositioned { coords ->
@@ -568,7 +582,7 @@ private fun MediaContinueWatchingCard(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (progress != null) "Kaldığınız yerden devam edin." else "Popüler içerik önerisi.",
+                        text = if (progress != null) "Kaldığınız yerden devam edin." else "Önerilen içerik.",
                         color = TextMuted,
                         fontSize = 10.sp
                     )

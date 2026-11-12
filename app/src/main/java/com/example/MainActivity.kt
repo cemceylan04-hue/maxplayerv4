@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
             com.example.model.FavoritesManager.init(this)
             com.example.model.CategoryManager.init(this)
             com.example.model.DeviceManager.init(this)
+            com.example.model.SupportRepository.init(this)
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Error during initialization", e)
         }

@@ -456,14 +456,7 @@ fun DeviceInfoScreen(
     }
 
     if (showSupportSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showSupportSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = Color(0xFF1E232A),
-            scrimColor = Color.Black.copy(alpha = 0.6f)
-        ) {
-            SupportTicketsSheet(onClose = { showSupportSheet = false })
-        }
+        SupportTicketsSheet(onClose = { showSupportSheet = false })
     }
 }
 

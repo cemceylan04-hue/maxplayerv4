@@ -40,6 +40,8 @@ import androidx.compose.ui.text.input.ImeAction
 import com.example.R
 import com.example.parser.M3uItem
 import com.example.ui.theme.RedPrimary
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -1371,7 +1373,160 @@ fun ProfileSettingsSheet(
 }
 
 @Composable
+fun SupportTicketCardItem(
+    ticket: com.example.model.SupportTicket,
+    modifier: Modifier = Modifier,
+    isFirstItem: Boolean = false,
+    firstItemFocusRequester: FocusRequester? = null,
+    sendButtonFocusRequester: FocusRequester? = null
+) {
+    var isItemFocused by remember { mutableStateOf(false) }
+    var isRead by remember(ticket.id, ticket.adminReply) {
+        mutableStateOf(com.example.model.SupportRepository.isTicketReplyRead(ticket))
+    }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (isFirstItem && firstItemFocusRequester != null) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+            .onFocusChanged { isItemFocused = it.isFocused }
+            .then(
+                if (sendButtonFocusRequester != null) {
+                    Modifier.focusProperties { left = sendButtonFocusRequester }
+                } else Modifier
+            )
+            .border(
+                width = if (isItemFocused) 2.dp else 1.dp,
+                color = if (isItemFocused) Color.White else Color(0xFF2C394B),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .focusable(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isItemFocused) Color(0xFF1E2D40) else Color(0xFF18222E)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            // Başlık & Durum
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = ticket.title,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Surface(
+                    color = if (ticket.status == "Yanıtlandı") Color(0xFF2E7D32) else Color(0xFFE65100),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = ticket.status,
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(ticket.timestamp, color = Color.Gray, fontSize = 9.sp)
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(ticket.message, color = Color.LightGray, fontSize = 11.sp)
+
+            // Yetkili Yanıtı ve Okundu Onay Kutusu
+            if (!ticket.adminReply.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    color = Color(0xFF004D40).copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(1.dp, Color(0xFF00897B)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Teknik Ekip Yanıtı:",
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF80CBC4),
+                                fontSize = 10.sp
+                            )
+
+                            // Okundu / Okunmadı Checkbox Kutusu
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clickable {
+                                        val nextVal = !isRead
+                                        isRead = nextVal
+                                        if (nextVal) {
+                                            com.example.model.SupportRepository.markTicketReplyAsRead(ticket)
+                                        } else {
+                                            com.example.model.SupportRepository.unmarkTicketReplyAsRead(ticket)
+                                        }
+                                    }
+                            ) {
+                                Checkbox(
+                                    checked = isRead,
+                                    onCheckedChange = { checked ->
+                                        isRead = checked
+                                        if (checked) {
+                                            com.example.model.SupportRepository.markTicketReplyAsRead(ticket)
+                                        } else {
+                                            com.example.model.SupportRepository.unmarkTicketReplyAsRead(ticket)
+                                        }
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = Color(0xFF69F0AE),
+                                        uncheckedColor = Color.LightGray,
+                                        checkmarkColor = Color.Black
+                                    ),
+                                    modifier = Modifier.size(24.dp).focusable()
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (isRead) "Okundu" else "Okunmadı",
+                                    color = if (isRead) Color(0xFF69F0AE) else Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(ticket.adminReply, color = Color.White, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SupportTicketsSheet(onClose: () -> Unit) {
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        SupportTicketsFullScreenContent(onClose = onClose)
+    }
+}
+
+@Composable
+fun SupportTicketsFullScreenContent(onClose: () -> Unit) {
     com.example.util.KeepSystemBarsHidden()
     val context = LocalContext.current
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
@@ -1380,453 +1535,638 @@ fun SupportTicketsSheet(onClose: () -> Unit) {
     val isSyncing by com.example.model.SupportRepository.isSyncing.collectAsState()
     var newTitle by remember { mutableStateOf("") }
     var newMessage by remember { mutableStateOf("") }
-    var showNewTicketForm by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
+    var submitSuccessBanner by remember { mutableStateOf<String?>(null) }
 
     val scope = rememberCoroutineScope()
 
     val titleFocusRequester = remember { FocusRequester() }
     val messageFocusRequester = remember { FocusRequester() }
     val sendButtonFocusRequester = remember { FocusRequester() }
-    val cancelButtonFocusRequester = remember { FocusRequester() }
-    val newTicketBtnFocusRequester = remember { FocusRequester() }
+    val clearButtonFocusRequester = remember { FocusRequester() }
+    val closeButtonFocusRequester = remember { FocusRequester() }
+    val ticketsListFocusRequester = remember { FocusRequester() }
 
-    BackHandler(enabled = showNewTicketForm) {
-        showNewTicketForm = false
+    BackHandler(enabled = true) {
+        onClose()
     }
 
     LaunchedEffect(Unit) {
         try {
             com.example.model.SupportRepository.syncTicketsFromOdoo()
         } catch (_: Exception) {}
-        delay(150)
-        try {
-            if (!showNewTicketForm) {
-                newTicketBtnFocusRequester.requestFocus()
-            }
-        } catch (_: Exception) {}
-    }
-
-    LaunchedEffect(showNewTicketForm) {
         delay(120)
         try {
-            if (showNewTicketForm) {
-                titleFocusRequester.requestFocus()
-            } else {
-                newTicketBtnFocusRequester.requestFocus()
-            }
+            titleFocusRequester.requestFocus()
         } catch (_: Exception) {}
     }
 
     val submitTicketAction: () -> Unit = {
-        if (newTitle.isNotBlank() && newMessage.isNotBlank()) {
+        if (newTitle.trim().isEmpty()) {
+            Toast.makeText(context, "Lütfen bir konu / başlık giriniz.", Toast.LENGTH_SHORT).show()
+            try { titleFocusRequester.requestFocus() } catch (_: Exception) {}
+        } else if (newMessage.trim().isEmpty()) {
+            Toast.makeText(context, "Lütfen mesajınızı / sorununuzu açıklayınız.", Toast.LENGTH_SHORT).show()
+            try { messageFocusRequester.requestFocus() } catch (_: Exception) {}
+        } else if (!isSubmitting) {
             isSubmitting = true
+            submitSuccessBanner = null
             scope.launch {
-                val result = com.example.model.SupportRepository.createTicketSuspend(newTitle.trim(), null, newMessage.trim())
-                isSubmitting = false
-                if (result.isSuccess) {
-                    newTitle = ""
-                    newMessage = ""
-                    showNewTicketForm = false
-                    Toast.makeText(context, context.getString(R.string.report_sent), Toast.LENGTH_SHORT).show()
-                } else {
-                    val err = result.exceptionOrNull()?.message ?: "Bilinmeyen hata"
-                    Toast.makeText(context, "Destek talebi iletilemedi: $err", Toast.LENGTH_LONG).show()
-                }
+            val result = com.example.model.SupportRepository.createTicketSuspend(
+                title = newTitle.trim(),
+                channelName = null,
+                message = newMessage.trim()
+            )
+            isSubmitting = false
+            if (result.isSuccess) {
+                newTitle = ""
+                newMessage = ""
+                submitSuccessBanner = "Talebiniz başarıyla iletildi. Ekibimiz inceleyip listeye ekleyecektir."
+                Toast.makeText(context, context.getString(R.string.report_sent), Toast.LENGTH_SHORT).show()
+                try {
+                    com.example.model.SupportRepository.syncTicketsFromOdoo()
+                } catch (_: Exception) {}
+                try { titleFocusRequester.requestFocus() } catch (_: Exception) {}
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Bilinmeyen bir hata oluştu"
+                Toast.makeText(context, "Destek talebi iletilemedi: $err", Toast.LENGTH_LONG).show()
             }
-        } else {
-            Toast.makeText(context, "Lütfen başlık ve mesaj giriniz.", Toast.LENGTH_SHORT).show()
         }
     }
+}
 
-    Column(
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .fillMaxHeight(if (isLandscape) 0.94f else 0.85f)
-            .padding(horizontal = 16.dp, vertical = if (isLandscape) 6.dp else 10.dp)
-            .padding(bottom = if (isLandscape) 8.dp else 28.dp)
-            .verticalScroll(rememberScrollState())
+            .fillMaxSize()
+            .background(Color(0xFF0F141C))
+            .padding(
+                horizontal = if (isLandscape) 24.dp else 16.dp,
+                vertical = if (isLandscape) 12.dp else 20.dp
+            )
     ) {
-        // Başlık ve Kapat Butonu
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(if (isLandscape) 38.dp else 44.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.SupportAgent,
-                    contentDescription = null,
-                    tint = Color(0xFF42A5F5),
-                    modifier = Modifier.size(if (isLandscape) 22.dp else 28.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = stringResource(R.string.support_tickets_title),
-                    fontSize = if (isLandscape) 16.sp else 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                if (isSyncing) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xFF42A5F5)
-                    )
-                }
-            }
-            IconButton(onClick = onClose, modifier = Modifier.size(if (isLandscape) 32.dp else 40.dp)) {
-                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close_desc), tint = Color.Gray)
-            }
-        }
-
-        HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = if (isLandscape) 4.dp else 8.dp))
-
-        // Form kapalıyken: Hem Yatay (TV) hem Dikey için açıkça görünen ve kumanda ile seçilen Yeni Talep butonu
-        if (!showNewTicketForm) {
-            var isNewBtnFocused by remember { mutableStateOf(false) }
-            Button(
-                onClick = { showNewTicketForm = true },
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header Row (Fixed, never scrolls)
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isLandscape) 40.dp else 46.dp)
-                    .focusRequester(newTicketBtnFocusRequester)
-                    .onFocusChanged { isNewBtnFocused = it.isFocused }
-                    .border(
-                        width = if (isNewBtnFocused) 2.5.dp else 1.dp,
-                        color = if (isNewBtnFocused) Color.White else Color(0xFF1E88E5),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-                    .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.type == KeyEventType.KeyDown && (keyEvent.key == Key.Enter || keyEvent.key == Key.DirectionCenter)) {
-                            showNewTicketForm = true
-                            true
-                        } else false
-                    },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isNewBtnFocused) RedPrimary else Color(0xFF1976D2)
-                ),
-                shape = RoundedCornerShape(10.dp)
+                    .height(if (isLandscape) 46.dp else 52.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    stringResource(R.string.ticket_new_btn),
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = if (isLandscape) 13.sp else 14.sp
-                )
-            }
-            Spacer(modifier = Modifier.height(if (isLandscape) 6.dp else 10.dp))
-        }
-
-        if (showNewTicketForm) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = if (isLandscape) 2.dp else 6.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF263238)),
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Column(modifier = Modifier.padding(if (isLandscape) 10.dp else 14.dp)) {
-                    Text(
-                        stringResource(R.string.ticket_new_btn),
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        fontSize = if (isLandscape) 14.sp else 15.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(if (isLandscape) 6.dp else 8.dp))
-
-                    // Başlık Alanı
-                    OutlinedTextField(
-                        value = newTitle,
-                        onValueChange = { newTitle = it },
-                        placeholder = { Text(stringResource(R.string.ticket_title_label), color = Color.Gray, fontSize = 12.sp) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                        keyboardActions = KeyboardActions(onNext = {
-                            try {
-                                messageFocusRequester.requestFocus()
-                            } catch (_: Exception) {}
-                        }),
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(titleFocusRequester)
-                            .focusProperties {
-                                down = messageFocusRequester
-                            }
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionDown, Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
-                                            try {
-                                                messageFocusRequester.requestFocus()
-                                            } catch (_: Exception) {}
-                                            true
-                                        }
-                                        else -> false
-                                    }
-                                } else false
-                            },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF42A5F5),
-                            unfocusedBorderColor = Color.DarkGray
-                        ),
-                        enabled = !isSubmitting
-                    )
-
-                    Spacer(modifier = Modifier.height(if (isLandscape) 6.dp else 8.dp))
-
-                    // Mesaj Alanı
-                    OutlinedTextField(
-                        value = newMessage,
-                        onValueChange = { newMessage = it },
-                        placeholder = { Text(stringResource(R.string.ticket_msg_label), color = Color.Gray, fontSize = 12.sp) },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = {
-                            try {
-                                sendButtonFocusRequester.requestFocus()
-                            } catch (_: Exception) {}
-                        }),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (isLandscape) 72.dp else 90.dp)
-                            .focusRequester(messageFocusRequester)
-                            .focusProperties {
-                                up = titleFocusRequester
-                                down = sendButtonFocusRequester
-                            }
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.DirectionUp -> {
-                                            try {
-                                                titleFocusRequester.requestFocus()
-                                            } catch (_: Exception) {}
-                                            true
-                                        }
-                                        Key.DirectionDown -> {
-                                            try {
-                                                sendButtonFocusRequester.requestFocus()
-                                            } catch (_: Exception) {}
-                                            true
-                                        }
-                                        else -> false
-                                    }
-                                } else false
-                            },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF42A5F5),
-                            unfocusedBorderColor = Color.DarkGray
-                        ),
-                        enabled = !isSubmitting
-                    )
-
-                    Spacer(modifier = Modifier.height(if (isLandscape) 8.dp else 12.dp))
-
-                    // Butonlar Alanı: Hem Yatay (TV) hem Dikey için açıkça görünür ve TV kumandası odaklı
-                    Row(
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
+                            .size(if (isLandscape) 36.dp else 40.dp)
+                            .background(Color(0xFF1E88E5).copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        var isCancelFocused by remember { mutableStateOf(false) }
-                        OutlinedButton(
-                            onClick = { showNewTicketForm = false },
-                            enabled = !isSubmitting,
-                            modifier = Modifier
-                                .height(38.dp)
-                                .focusRequester(cancelButtonFocusRequester)
-                                .onFocusChanged { isCancelFocused = it.isFocused }
-                                .focusProperties {
-                                    up = messageFocusRequester
-                                    right = sendButtonFocusRequester
-                                }
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionUp -> {
-                                                try {
-                                                    messageFocusRequester.requestFocus()
-                                                } catch (_: Exception) {}
-                                                true
-                                            }
-                                            Key.DirectionRight -> {
-                                                try {
-                                                    sendButtonFocusRequester.requestFocus()
-                                                } catch (_: Exception) {}
-                                                true
-                                            }
-                                            Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
-                                                showNewTicketForm = false
-                                                true
-                                            }
-                                            else -> false
-                                        }
-                                    } else false
-                                },
-                            border = BorderStroke(
-                                if (isCancelFocused) 2.dp else 1.dp,
-                                if (isCancelFocused) Color.White else Color.Gray
-                            ),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (isCancelFocused) Color.White.copy(alpha = 0.25f) else Color.Transparent
-                            )
-                        ) {
+                        Icon(
+                            Icons.Default.SupportAgent,
+                            contentDescription = null,
+                            tint = Color(0xFF42A5F5),
+                            modifier = Modifier.size(if (isLandscape) 24.dp else 26.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                stringResource(R.string.close_desc),
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = if (isCancelFocused) FontWeight.Bold else FontWeight.Normal
+                                text = stringResource(R.string.support_tickets_title),
+                                fontSize = if (isLandscape) 17.sp else 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
                             )
-                        }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        var isSendFocused by remember { mutableStateOf(false) }
-                        Button(
-                            onClick = { submitTicketAction() },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSendFocused) RedPrimary else Color(0xFF1976D2)
-                            ),
-                            enabled = !isSubmitting,
-                            modifier = Modifier
-                                .height(38.dp)
-                                .focusRequester(sendButtonFocusRequester)
-                                .onFocusChanged { isSendFocused = it.isFocused }
-                                .focusProperties {
-                                    up = messageFocusRequester
-                                    left = cancelButtonFocusRequester
-                                }
-                                .onPreviewKeyEvent { keyEvent ->
-                                    if (keyEvent.type == KeyEventType.KeyDown) {
-                                        when (keyEvent.key) {
-                                            Key.DirectionUp -> {
-                                                try {
-                                                    messageFocusRequester.requestFocus()
-                                                } catch (_: Exception) {}
-                                                true
-                                            }
-                                            Key.DirectionLeft -> {
-                                                try {
-                                                    cancelButtonFocusRequester.requestFocus()
-                                                } catch (_: Exception) {}
-                                                true
-                                            }
-                                            Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
-                                                submitTicketAction()
-                                                true
-                                            }
-                                            else -> false
-                                        }
-                                    } else false
-                                }
-                                .border(
-                                    2.dp,
-                                    if (isSendFocused) Color.White else Color.Transparent,
-                                    RoundedCornerShape(8.dp)
+                            if (isSyncing) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(13.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color(0xFF42A5F5)
                                 )
-                        ) {
-                            if (isSubmitting) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
-                                Spacer(modifier = Modifier.width(6.dp))
                             }
-                            Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.report_send), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
+                        Text(
+                            text = "Cihaz: ${com.example.model.DeviceManager.getDeviceId()} • Kod: ${com.example.model.DeviceManager.getDeviceKey()}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF90A4AE)
+                        )
                     }
                 }
-            }
-        }
 
-        if (!showNewTicketForm) {
-            if (tickets.isEmpty()) {
-                Box(
+                // Close Button with clear TV focus border
+                var isCloseFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = onClose,
+                    modifier = Modifier
+                        .height(if (isLandscape) 36.dp else 40.dp)
+                        .focusRequester(closeButtonFocusRequester)
+                        .onFocusChanged { isCloseFocused = it.isFocused }
+                        .focusProperties {
+                            down = titleFocusRequester
+                        }
+                        .border(
+                            width = if (isCloseFocused) 2.dp else 1.dp,
+                            color = if (isCloseFocused) Color.White else Color(0xFF37474F),
+                            shape = RoundedCornerShape(8.dp)
+                        ),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isCloseFocused) RedPrimary else Color(0xFF263238)
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.close_desc), tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "KAPAT (ESC)",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                color = Color(0xFF263238),
+                thickness = 1.dp,
+                modifier = Modifier.padding(vertical = if (isLandscape) 6.dp else 10.dp)
+            )
+
+            // Body Content
+            if (isLandscape) {
+                // TV / Landscape: Side-by-side layout, 100% fit on screen, zero sliding down!
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 28.dp),
-                    contentAlignment = Alignment.Center
+                        .weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.SupportAgent, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(if (isLandscape) 36.dp else 48.dp))
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text("Henüz bir destek talebiniz bulunmuyor.", color = Color.Gray, fontSize = if (isLandscape) 13.sp else 14.sp)
-                        Text("Yeni talep oluşturmak için yukarıdaki butonu kullanın.", color = Color.DarkGray, fontSize = if (isLandscape) 11.sp else 12.sp)
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 10.dp)
-                ) {
-                    tickets.forEach { ticket ->
-                        var isCardFocused by remember { mutableStateOf(false) }
-                        Card(
+                    // Left Column: Yeni Destek Talebi Formu
+                    Card(
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .fillMaxHeight(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF161E28)),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFF253344))
+                    ) {
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .onFocusChanged { isCardFocused = it.isFocused }
-                                .border(
-                                    1.5.dp,
-                                    if (isCardFocused) Color.White else Color.Transparent,
-                                    RoundedCornerShape(8.dp)
-                                )
-                                .focusable(),
-                            colors = CardDefaults.cardColors(containerColor = if (isCardFocused) Color(0xFF2E3B4E) else Color(0xFF1E1E1E)),
-                            shape = RoundedCornerShape(8.dp)
+                                .fillMaxSize()
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
-                            Column(modifier = Modifier.padding(if (isLandscape) 10.dp else 12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Edit, contentDescription = null, tint = Color(0xFF64B5F6), modifier = Modifier.size(17.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Yeni Destek Talebi Oluştur", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
+                                }
+                                Surface(
+                                    color = Color(0xFF0D47A1).copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Text(
-                                        text = ticket.title,
+                                        "Odoo Canlı Destek",
+                                        color = Color(0xFF90CAF9),
+                                        fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
-                                    Surface(
-                                        color = if (ticket.status == "Yanıtlandı") Color(0xFF1B5E20) else Color(0xFFE65100),
-                                        shape = RoundedCornerShape(12.dp)
-                                    ) {
-                                        Text(
-                                            text = if (ticket.status == "Yanıtlandı") stringResource(R.string.ticket_status_resolved) else stringResource(R.string.ticket_status_open),
-                                            color = Color.White,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                }
+                            }
+
+                            if (submitSuccessBanner != null) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Surface(
+                                    color = Color(0xFF1B5E20).copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF4CAF50)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF81C784), modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(submitSuccessBanner!!, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text("Konu / Başlık:", color = Color(0xFFCFD8DC), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(3.dp))
+                            OutlinedTextField(
+                                value = newTitle,
+                                onValueChange = {
+                                    newTitle = it
+                                    if (submitSuccessBanner != null) submitSuccessBanner = null
+                                },
+                                placeholder = { Text("Örn: Kanal yayını açılmıyor, ses senkronu...", color = Color.Gray, fontSize = 11.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                                keyboardActions = KeyboardActions(onNext = {
+                                    try { messageFocusRequester.requestFocus() } catch (_: Exception) {}
+                                }),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(titleFocusRequester)
+                                    .focusProperties {
+                                        up = closeButtonFocusRequester
+                                        down = messageFocusRequester
+                                        right = ticketsListFocusRequester
+                                    }
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.key) {
+                                                Key.DirectionUp -> {
+                                                    try { closeButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                    true
+                                                }
+                                                Key.DirectionDown, Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
+                                                    try { messageFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                    true
+                                                }
+                                                Key.DirectionRight -> {
+                                                    try { ticketsListFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                    true
+                                                }
+                                                else -> false
+                                            }
+                                        } else false
+                                    },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF42A5F5),
+                                    unfocusedBorderColor = Color(0xFF37474F),
+                                    focusedContainerColor = Color(0xFF1E2836),
+                                    unfocusedContainerColor = Color(0xFF141B24)
+                                ),
+                                enabled = !isSubmitting
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text("Mesajınız / Sorunun Detayı:", color = Color(0xFFCFD8DC), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(3.dp))
+                            OutlinedTextField(
+                                value = newMessage,
+                                onValueChange = {
+                                    newMessage = it
+                                    if (submitSuccessBanner != null) submitSuccessBanner = null
+                                },
+                                placeholder = { Text("Sorunun detaylarını buraya yazınız...", color = Color.Gray, fontSize = 11.sp) },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = {
+                                    try { sendButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+                                }),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f, fill = false)
+                                    .heightIn(min = 68.dp, max = 88.dp)
+                                    .focusRequester(messageFocusRequester)
+                                    .focusProperties {
+                                        up = titleFocusRequester
+                                        down = sendButtonFocusRequester
+                                        right = ticketsListFocusRequester
+                                    }
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.key) {
+                                                Key.DirectionUp -> {
+                                                    try { titleFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                    true
+                                                }
+                                                Key.DirectionDown -> {
+                                                    try { sendButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                    true
+                                                }
+                                                Key.DirectionRight -> {
+                                                    try { ticketsListFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                    true
+                                                }
+                                                else -> false
+                                            }
+                                        } else false
+                                    },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF42A5F5),
+                                    unfocusedBorderColor = Color(0xFF37474F),
+                                    focusedContainerColor = Color(0xFF1E2836),
+                                    unfocusedContainerColor = Color(0xFF141B24)
+                                ),
+                                enabled = !isSubmitting
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Butonlar Alanı
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                var isClearFocused by remember { mutableStateOf(false) }
+                                OutlinedButton(
+                                    onClick = {
+                                        newTitle = ""
+                                        newMessage = ""
+                                        submitSuccessBanner = null
+                                    },
+                                    enabled = !isSubmitting && (newTitle.isNotEmpty() || newMessage.isNotEmpty()),
+                                    modifier = Modifier
+                                        .height(38.dp)
+                                        .focusRequester(clearButtonFocusRequester)
+                                        .onFocusChanged { isClearFocused = it.isFocused }
+                                        .focusProperties {
+                                            up = messageFocusRequester
+                                            right = sendButtonFocusRequester
+                                        }
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                                when (keyEvent.key) {
+                                                    Key.DirectionUp -> {
+                                                        try { messageFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                        true
+                                                    }
+                                                    Key.DirectionRight -> {
+                                                        try { sendButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                        true
+                                                    }
+                                                    Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
+                                                        newTitle = ""
+                                                        newMessage = ""
+                                                        submitSuccessBanner = null
+                                                        true
+                                                    }
+                                                    else -> false
+                                                }
+                                            } else false
+                                        },
+                                    border = BorderStroke(
+                                        if (isClearFocused) 2.dp else 1.dp,
+                                        if (isClearFocused) Color.White else Color.DarkGray
+                                    ),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = if (isClearFocused) Color.White.copy(alpha = 0.2f) else Color.Transparent
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Clear, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Temizle", color = Color.LightGray, fontSize = 11.sp)
+                                }
+
+                                var isSendFocused by remember { mutableStateOf(false) }
+                                Button(
+                                    onClick = { submitTicketAction() },
+                                    enabled = !isSubmitting,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isSendFocused) RedPrimary else Color(0xFF1976D2)
+                                    ),
+                                    modifier = Modifier
+                                        .height(40.dp)
+                                        .focusRequester(sendButtonFocusRequester)
+                                        .onFocusChanged { isSendFocused = it.isFocused }
+                                        .focusProperties {
+                                            up = messageFocusRequester
+                                            left = clearButtonFocusRequester
+                                            right = ticketsListFocusRequester
+                                        }
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                                when (keyEvent.key) {
+                                                    Key.DirectionUp -> {
+                                                        try { messageFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                        true
+                                                    }
+                                                    Key.DirectionLeft -> {
+                                                        try { clearButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                        true
+                                                    }
+                                                    Key.DirectionRight -> {
+                                                        try { ticketsListFocusRequester.requestFocus() } catch (_: Exception) {}
+                                                        true
+                                                    }
+                                                    Key.Enter, Key.DirectionCenter, Key.NumPadEnter -> {
+                                                        submitTicketAction()
+                                                        true
+                                                    }
+                                                    else -> false
+                                                }
+                                            } else false
+                                        }
+                                        .border(
+                                            width = if (isSendFocused) 2.5.dp else 1.dp,
+                                            color = if (isSendFocused) Color.White else Color(0xFF42A5F5),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+                                ) {
+                                    if (isSubmitting) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    } else {
+                                        Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    Text(
+                                        text = if (isSubmitting) "İLETİLİYOR..." else "TALEBİ GÖNDER",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Right Column: Geçmiş Talepler ve Yanıtlar
+                    Card(
+                        modifier = Modifier
+                            .weight(0.95f)
+                            .fillMaxHeight(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141A22)),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFF222C38))
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.History, contentDescription = null, tint = Color(0xFF90CAF9), modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Destek Talepleriniz (${tickets.size})", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            if (tickets.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(Icons.Default.SupportAgent, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(34.dp))
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text("Henüz açık bir destek talebiniz yok.", color = Color.Gray, fontSize = 12.sp, textAlign = TextAlign.Center)
+                                        Spacer(modifier = Modifier.height(3.dp))
+                                        Text("Sol taraftaki formu doldurarak yeni talep iletebilirsiniz.", color = Color(0xFF546E7A), fontSize = 11.sp, textAlign = TextAlign.Center)
+                                    }
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    items(tickets.size) { index ->
+                                        val ticket = tickets[index]
+                                        SupportTicketCardItem(
+                                            ticket = ticket,
+                                            isFirstItem = (index == 0),
+                                            firstItemFocusRequester = if (index == 0) ticketsListFocusRequester else null,
+                                            sendButtonFocusRequester = sendButtonFocusRequester
                                         )
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(text = ticket.timestamp, fontSize = 10.sp, color = Color.Gray)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(text = ticket.message, fontSize = 12.sp, color = Color.LightGray)
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Mobile / Portrait Mode: Vertical layout with single clean scroll
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF161E28)),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFF253344))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Yeni Destek Talebi Oluştur", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
+                                Surface(
+                                    color = Color(0xFF0D47A1).copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        "Odoo",
+                                        color = Color(0xFF90CAF9),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
 
-                                if (ticket.adminReply != null) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0xFF263238), RoundedCornerShape(6.dp))
-                                            .padding(8.dp)
-                                    ) {
-                                        Icon(Icons.Default.SupportAgent, contentDescription = null, tint = Color(0xFF69F0AE), modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Column {
-                                            Text(stringResource(R.string.ticket_admin_reply_label), fontWeight = FontWeight.Bold, color = Color(0xFF69F0AE), fontSize = 11.sp)
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Text(text = ticket.adminReply, color = Color.White, fontSize = 12.sp)
-                                        }
+                            if (submitSuccessBanner != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Surface(
+                                    color = Color(0xFF1B5E20).copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF4CAF50)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF81C784), modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(submitSuccessBanner!!, color = Color.White, fontSize = 11.sp)
                                     }
                                 }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Konu / Başlık:", color = Color(0xFFCFD8DC), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = newTitle,
+                                onValueChange = {
+                                    newTitle = it
+                                    if (submitSuccessBanner != null) submitSuccessBanner = null
+                                },
+                                placeholder = { Text("Sorunu kısaca belirtin...", color = Color.Gray, fontSize = 12.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF42A5F5),
+                                    unfocusedBorderColor = Color(0xFF37474F)
+                                ),
+                                enabled = !isSubmitting
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Mesajınız / Sorunun Detayı:", color = Color(0xFFCFD8DC), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = newMessage,
+                                onValueChange = {
+                                    newMessage = it
+                                    if (submitSuccessBanner != null) submitSuccessBanner = null
+                                },
+                                placeholder = { Text("Sorunun detaylarını yazınız...", color = Color.Gray, fontSize = 12.sp) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(90.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF42A5F5),
+                                    unfocusedBorderColor = Color(0xFF37474F)
+                                ),
+                                enabled = !isSubmitting
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Button(
+                                    onClick = { submitTicketAction() },
+                                    enabled = !isSubmitting,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    if (isSubmitting) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (isSubmitting) "İLETİLİYOR..." else "TALEBİ GÖNDER",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Mobile past tickets
+                    if (tickets.isNotEmpty()) {
+                        Text("Destek Talepleriniz (${tickets.size})", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            tickets.forEach { ticket ->
+                                SupportTicketCardItem(
+                                    ticket = ticket
+                                )
                             }
                         }
                     }
@@ -1835,3 +2175,4 @@ fun SupportTicketsSheet(onClose: () -> Unit) {
         }
     }
 }
+
