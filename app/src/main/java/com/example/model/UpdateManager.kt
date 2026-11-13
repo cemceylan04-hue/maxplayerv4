@@ -80,6 +80,11 @@ object UpdateManager {
     }
 
     suspend fun checkForUpdates(context: Context, manual: Boolean = false) = withContext(Dispatchers.IO) {
+        // Otomatik guncellemeyi kapat (Play Store & kullanıcı isteği): Sadece kullanıcı ayarlardan manuel tıkladığında çalışır
+        if (!manual) {
+            return@withContext
+        }
+
         _isChecking.value = true
         _errorMsg.value = null
         _upToDateMessage.value = null

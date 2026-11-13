@@ -122,9 +122,6 @@ fun PlayListsScreen(
     // Background periodic Odoo sync to keep package, device, and playlists in sync with web portal
     LaunchedEffect(effectiveUserId) {
         try {
-            com.example.model.UpdateManager.checkForUpdates(context, manual = false)
-        } catch (_: Exception) {}
-        try {
             if (!DeviceManager.isDeviceRegisteredOnPortal()) {
                 OdooIntegrationManager.sendDeviceToPortalAndSyncAll(
                     context = context,

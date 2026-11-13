@@ -173,9 +173,6 @@ fun DashboardScreen(
                 com.example.model.SupportRepository.syncTicketsFromOdoo()
             } catch (e: Exception) {}
             try {
-                com.example.model.UpdateManager.checkForUpdates(context, manual = false)
-            } catch (e: Exception) {}
-            try {
                 val targetUserId = com.example.model.DeviceManager.getCurrentUserId()
                     ?: com.example.model.DeviceManager.getCurrentUserEmail()
                     ?: com.example.model.DeviceManager.getDeviceId()
