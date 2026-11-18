@@ -1039,6 +1039,7 @@ fun ProfileSettingsSheet(
                                             .background(Color(0xFF1E232A), RoundedCornerShape(8.dp))
                                             .clickable {
                                                 coroutineScope.launch {
+                                                    com.example.auth.GoogleAuthManager.clearCredentialState(context)
                                                     db.iptvDao().clearUsers()
                                                     Toast.makeText(context, context.getString(R.string.sign_out_account), Toast.LENGTH_SHORT).show()
                                                     onNavigateToAuth()
@@ -1061,6 +1062,7 @@ fun ProfileSettingsSheet(
                                         .background(Color(0xFF2E1C1C), RoundedCornerShape(8.dp))
                                         .clickable {
                                             coroutineScope.launch {
+                                                com.example.auth.GoogleAuthManager.clearCredentialState(context)
                                                 db.iptvDao().clearUsers()
                                                 db.iptvDao().clearRecentProgress()
                                                 Toast.makeText(context, context.getString(R.string.account_removed_toast), Toast.LENGTH_SHORT).show()
@@ -1263,6 +1265,7 @@ fun ProfileSettingsSheet(
                             .fillMaxWidth()
                             .clickable {
                                 coroutineScope.launch {
+                                    com.example.auth.GoogleAuthManager.clearCredentialState(context)
                                     db.iptvDao().clearUsers()
                                     Toast.makeText(context, context.getString(R.string.sign_out_account), Toast.LENGTH_SHORT).show()
                                     onNavigateToAuth()
@@ -1282,6 +1285,7 @@ fun ProfileSettingsSheet(
                         .fillMaxWidth()
                         .clickable {
                             coroutineScope.launch {
+                                com.example.auth.GoogleAuthManager.clearCredentialState(context)
                                 db.iptvDao().clearUsers()
                                 db.iptvDao().clearRecentProgress()
                                 Toast.makeText(context, context.getString(R.string.account_removed_toast), Toast.LENGTH_SHORT).show()

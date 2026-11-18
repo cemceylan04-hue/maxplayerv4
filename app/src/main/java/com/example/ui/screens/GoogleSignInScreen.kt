@@ -1,5 +1,10 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -13,6 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -27,6 +35,7 @@ import com.example.BuildConfig
 import com.example.R
 import com.example.auth.GoogleAuthManager
 import com.example.auth.GoogleAuthResult
+import com.example.auth.findActivity
 import com.example.model.DeviceManager
 import com.example.model.OdooIntegrationManager
 import com.example.model.db.AppDatabase
@@ -47,99 +56,196 @@ fun GoogleSignInScreen(
     var isLoading by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isNoAccountError by remember { mutableStateOf(false) }
+    var configSha1Info by remember { mutableStateOf<String?>(null) }
+    var shaCopied by remember { mutableStateOf(false) }
+    var triedEmailOnlyFallback by remember { mutableStateOf(false) }
+    var isSignInFocused by remember { mutableStateOf(false) }
+    var isAddAccountFocused by remember { mutableStateOf(false) }
+    var isCopyShaFocused by remember { mutableStateOf(false) }
+    val signInFocusRequester = remember { FocusRequester() }
 
     androidx.activity.compose.BackHandler(enabled = true) {
         onBack()
     }
 
-    // Initialize device identity
+    // Initialize device identity and focus sign-in button for Android TV remote
     LaunchedEffect(Unit) {
         DeviceManager.init(context)
+        try {
+            signInFocusRequester.requestFocus()
+        } catch (_: Exception) {}
     }
 
-    val startGoogleSignIn: () -> Unit = {
+    val openAddGoogleAccountSettings: () -> Unit = {
+        val intents = listOf(
+            Intent(Settings.ACTION_ADD_ACCOUNT).apply {
+                putExtra(Settings.EXTRA_ACCOUNT_TYPES, arrayOf("com.google"))
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(Settings.ACTION_SYNC_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(Settings.ACTION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        var launched = false
+        for (intent in intents) {
+            try {
+                context.startActivity(intent)
+                launched = true
+                break
+            } catch (_: Exception) {}
+        }
+        if (!launched) {
+            errorMessage = "Cihaz ayarları açılamadı. Lütfen Sistem Ayarları > Hesaplar menüsünden Google hesabınızı ekleyip tekrar deneyin."
+        }
+    }
+
+    val resolvedClientId = remember {
         val configuredId = BuildConfig.GOOGLE_CLIENT_ID
-        val clientId = if (configuredId.isBlank() || configuredId == "YOUR_GOOGLE_CLIENT_ID" || configuredId == "mock-client-id") {
+        if (configuredId.isBlank() || configuredId == "YOUR_GOOGLE_CLIENT_ID" || configuredId == "mock-client-id") {
             DEFAULT_FALLBACK_CLIENT_ID
         } else {
             configuredId
         }
+    }
 
-        isLoading = true
-        statusText = "Google ile bağlantı kuruluyor..."
-        errorMessage = null
-
+    val completeSignInSuccess: (com.example.auth.GoogleUser) -> Unit = { user ->
         scope.launch {
             try {
-                val result = GoogleAuthManager.signInWithGoogle(context, clientId)
-                when (result) {
-                    is GoogleAuthResult.Success -> {
-                        statusText = "Odoo 19 ile senkronize ediliyor..."
-                        val user = result.user
-                        val email = user.email ?: user.id
-                        val displayName = user.displayName ?: "Google Kullanıcısı"
+                statusText = "Hesabınıza giriş yapılıyor..."
+                val email = user.email ?: user.id
+                val displayName = user.displayName ?: "Google Kullanıcısı"
 
-                        // 1. Doğrulanan Google kullanıcısını yerel veritabanına ve DeviceManager'a kaydet
-                        val db = AppDatabase.getDatabase(context)
-                        db.iptvDao().insertUser(
-                            UserEntity(
-                                id = email,
-                                name = displayName,
-                                email = email,
-                                photoUrl = user.photoUrl
-                            )
+                // 1. Doğrulanan Google kullanıcısını yerel veritabanına ve DeviceManager'a kaydet
+                val db = AppDatabase.getDatabase(context)
+                db.iptvDao().insertUser(
+                    UserEntity(
+                        id = email,
+                        name = displayName,
+                        email = email,
+                        photoUrl = user.photoUrl
+                    )
+                )
+                DeviceManager.setCustomerName(displayName)
+                DeviceManager.setCurrentUser(email, displayName, email, user.photoUrl)
+
+                // 2. Odoo müşteri ve varsa çalma listelerini hızlıca eşitle (zaman aşımı korumalı)
+                kotlinx.coroutines.withTimeoutOrNull(4500L) {
+                    try {
+                        OdooIntegrationManager.registerCustomerAndTrial(
+                            context = context,
+                            userId = email,
+                            userName = displayName,
+                            userEmail = email
                         )
-                        DeviceManager.setCustomerName(displayName)
-                        DeviceManager.setCurrentUser(email, displayName, email, user.photoUrl)
-
-                        // 2. Odoo sunucusuyla senkronizasyon
-                        try {
-                            OdooIntegrationManager.registerCustomerAndTrial(
-                                context = context,
-                                userId = email,
-                                userName = displayName,
-                                userEmail = email
-                            )
-                        } catch (e: Exception) {
-                            android.util.Log.w("GoogleSignIn", "Odoo kayit uyarisi: ${e.message}")
-                        }
-
-                        // 3. Varsa mevcut Odoo çalma listelerini senkronize et
-                        try {
-                            OdooIntegrationManager.syncPlaylistsFromOdoo(context, email)
-                        } catch (_: Exception) {}
-
-                        // 4. Başarılı şekilde sonraki ekrana geçiş yap
-                        isLoading = false
-                        statusText = null
-                        onSignInSuccess(email)
+                    } catch (e: Exception) {
+                        android.util.Log.w("GoogleSignIn", "Odoo kayit uyarisi: ${e.message}")
                     }
+                    try {
+                        OdooIntegrationManager.syncPlaylistsFromOdoo(context, email)
+                    } catch (_: Exception) {}
+                }
+
+                // 3. Doğrudan hesaba giriş yap (bilgi ekranları atlanır)
+                isLoading = false
+                statusText = null
+                onSignInSuccess(email)
+            } catch (e: Exception) {
+                isLoading = false
+                statusText = null
+                errorMessage = "Giriş tamamlanırken hata: ${e.localizedMessage}"
+            }
+        }
+    }
+
+    lateinit var launchGoogleIntent: (Boolean) -> Unit
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { activityResult ->
+        val parsed = GoogleAuthManager.parseGoogleSignInIntent(activityResult.data)
+        when (parsed) {
+            is GoogleAuthResult.Success -> {
+                completeSignInSuccess(parsed.user)
+            }
+            is GoogleAuthResult.Cancelled -> {
+                isLoading = false
+                statusText = null
+                isNoAccountError = false
+                configSha1Info = null
+                errorMessage = "Google ile oturum açma iptal edildi. Lütfen hesabınızı seçip tekrar deneyiniz."
+            }
+            is GoogleAuthResult.NoAccountOnDevice -> {
+                isLoading = false
+                statusText = null
+                isNoAccountError = true
+                configSha1Info = null
+                errorMessage = "Cihazınızda oturum açmış bir Google hesabı bulunamadı."
+            }
+            is GoogleAuthResult.Error -> {
+                if (parsed.isConfigurationError && !triedEmailOnlyFallback) {
+                    triedEmailOnlyFallback = true
+                    launchGoogleIntent(false)
+                } else {
+                    isLoading = false
+                    statusText = null
+                    isNoAccountError = false
+                    configSha1Info = if (parsed.isConfigurationError) {
+                        GoogleAuthManager.getAppSigningSha1(context)
+                    } else null
+                    errorMessage = parsed.message ?: "Google ile giriş yapılırken bir hata oluştu."
+                }
+            }
+        }
+    }
+
+    launchGoogleIntent = { includeIdToken ->
+        try {
+            val hostContext = context.findActivity() ?: context
+            val client = GoogleAuthManager.buildGoogleSignInClient(
+                context = hostContext,
+                serverClientId = resolvedClientId,
+                includeIdToken = includeIdToken
+            )
+            googleSignInLauncher.launch(client.signInIntent)
+        } catch (e: Exception) {
+            // Fallback to CredentialManager if GoogleSignIn intent fails to launch
+            scope.launch {
+                val res = GoogleAuthManager.signInWithGoogle(context, resolvedClientId)
+                when (res) {
+                    is GoogleAuthResult.Success -> completeSignInSuccess(res.user)
                     is GoogleAuthResult.NoAccountOnDevice -> {
                         isLoading = false
                         statusText = null
-                        errorMessage = "Cihazınızda kayıtlı bir Google hesabı bulunamadı. Lütfen cihaz ayarlarınızdan Google hesabınızı ekleyip tekrar deneyiniz."
+                        isNoAccountError = true
+                        errorMessage = "Cihazınızda oturum açmış bir Google hesabı bulunamadı."
                     }
                     is GoogleAuthResult.Cancelled -> {
                         isLoading = false
                         statusText = null
-                        errorMessage = "Oturum açma penceresi kapandı. Lütfen hesabınızı seçip tekrar deneyiniz."
+                        errorMessage = "Google ile oturum açma iptal edildi."
                     }
                     is GoogleAuthResult.Error -> {
                         isLoading = false
                         statusText = null
-                        errorMessage = if (result.isConfigurationError) {
-                            "Google OAuth yapılandırması kontrol edilmelidir (Hata kodu: 10 / 28433)."
-                        } else {
-                            result.message ?: "Google ile giriş yapılırken bir hata oluştu."
-                        }
+                        errorMessage = res.message ?: "Google ile giriş yapılırken bir hata oluştu."
                     }
                 }
-            } catch (e: Exception) {
-                isLoading = false
-                statusText = null
-                errorMessage = "Google girişi sırasında hata: ${e.localizedMessage}"
             }
         }
+    }
+
+    val startGoogleSignIn: () -> Unit = {
+        isLoading = true
+        statusText = "Google hesabı seçiliyor..."
+        errorMessage = null
+        isNoAccountError = false
+        configSha1Info = null
+        shaCopied = false
+        triedEmailOnlyFallback = false
+        launchGoogleIntent(true)
     }
 
     Box(
@@ -213,31 +319,116 @@ fun GoogleSignInScreen(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Icon(
-                            Icons.Default.ErrorOutline,
-                            contentDescription = null,
-                            tint = Color(0xFFEF5350),
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Giriş Uyarısı",
-                                color = Color(0xFFFFCDD2),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Icon(
+                                Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = Color(0xFFEF5350),
+                                modifier = Modifier.size(22.dp)
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = errorMessage!!,
-                                color = Color(0xFFE0E0E0),
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Giriş Uyarısı",
+                                    color = Color(0xFFFFCDD2),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = errorMessage!!,
+                                    color = Color(0xFFE0E0E0),
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                        }
+                        if (isNoAccountError) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedButton(
+                                onClick = openAddGoogleAccountSettings,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .onFocusChanged { isAddAccountFocused = it.isFocused }
+                                    .testTag("add_google_account_button"),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(
+                                    width = if (isAddAccountFocused) 2.dp else 1.dp,
+                                    color = if (isAddAccountFocused) Color.White else Color(0xFFEF5350)
+                                ),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFFFFCDD2)
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.PersonAdd,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Cihaz Ayarlarından Google Hesabı Ekle",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        if (configSha1Info != null) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF1A0D10), RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "Bu APK'nın SHA-1 imzası Google Cloud'da eksik olabilir:",
+                                    color = Color(0xFFCBD5E1),
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    text = configSha1Info!!,
+                                    color = Color(0xFFFDE68A),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("APK SHA-1", configSha1Info))
+                                        shaCopied = true
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .onFocusChanged { isCopyShaFocused = it.isFocused }
+                                        .testTag("copy_sha1_button"),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(
+                                        width = if (isCopyShaFocused) 2.dp else 1.dp,
+                                        color = if (isCopyShaFocused) Color.White else Color(0xFFF59E0B)
+                                    ),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = Color(0xFFFDE68A)
+                                    )
+                                ) {
+                                    Icon(
+                                        if (shaCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (shaCopied) "SHA-1 Kopyalandı" else "APK SHA-1 İmzasını Kopyala",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -250,8 +441,11 @@ fun GoogleSignInScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp)
+                    .focusRequester(signInFocusRequester)
+                    .onFocusChanged { isSignInFocused = it.isFocused }
                     .testTag("google_signin_button"),
                 shape = RoundedCornerShape(14.dp),
+                border = if (isSignInFocused) BorderStroke(3.dp, RedPrimary) else null,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color.White,
                     contentColor = Color(0xFF1F1F1F)

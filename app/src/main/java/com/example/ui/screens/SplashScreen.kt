@@ -117,7 +117,7 @@ fun SplashScreen(
                             }
                             onNavigateToNext(com.example.ui.NavRoutes.DASHBOARD, existingUser.id)
                         } else {
-                            onNavigateToNext(com.example.ui.NavRoutes.DEVICE_INFO, existingUser.id)
+                            onNavigateToNext(com.example.ui.NavRoutes.PLAYLISTS, existingUser.id)
                         }
                     } else {
                         onNavigateToNext(com.example.ui.NavRoutes.GOOGLE_SIGN_IN, null)

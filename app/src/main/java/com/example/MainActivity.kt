@@ -149,9 +149,50 @@ class MainActivity : ComponentActivity() {
                                 GoogleSignInScreen(
                                     onSignInSuccess = { userId ->
                                         currentUserId = userId
-                                        navController.navigate(NavRoutes.DEVICE_INFO) {
-                                            popUpTo(NavRoutes.GOOGLE_SIGN_IN) { inclusive = true }
-                                            launchSingleTop = true
+                                        scope.launch {
+                                            val db = AppDatabase.getDatabase(this@MainActivity)
+                                            // Arka planda sessizce cihazı Odoo portalına kaydet (bilgi ekranı açılmadan)
+                                            launch(Dispatchers.IO) {
+                                                try {
+                                                    val user = db.iptvDao().getUser(userId)
+                                                    com.example.model.OdooIntegrationManager.sendDeviceToPortalAndSyncAll(
+                                                        context = this@MainActivity,
+                                                        userId = userId,
+                                                        userName = user?.name ?: "Kullanıcı",
+                                                        userEmail = user?.email ?: userId
+                                                    )
+                                                } catch (_: Exception) {}
+                                            }
+                                            val playlists = withContext(Dispatchers.IO) {
+                                                val userLists = if (userId.isNotBlank()) {
+                                                    db.iptvDao().getPlaylistsForUserSync(userId)
+                                                } else {
+                                                    emptyList()
+                                                }
+                                                val raw = if (userLists.isNotEmpty()) userLists else db.iptvDao().getAllPlaylistsSync()
+                                                raw.filter { p ->
+                                                    !com.example.model.OdooIntegrationManager.isCreditOrShopItem(p.name, p.hostUrl, p.username)
+                                                }
+                                            }
+                                            if (playlists.isNotEmpty()) {
+                                                val lastUsed = PlaylistRepository.getLastUsedPlaylistUrl(this@MainActivity)
+                                                val target = if (lastUsed != null) {
+                                                    playlists.firstOrNull { PlaylistRepository.buildPlaylistUrl(it.hostUrl, it.username, it.password) == lastUsed } ?: playlists.first()
+                                                } else {
+                                                    playlists.first()
+                                                }
+                                                val urlToLoad = PlaylistRepository.buildPlaylistUrl(target.hostUrl, target.username, target.password)
+                                                navController.navigate(NavRoutes.DASHBOARD) {
+                                                    popUpTo(NavRoutes.GOOGLE_SIGN_IN) { inclusive = true }
+                                                    launchSingleTop = true
+                                                }
+                                                PlaylistRepository.loadPlaylist(this@MainActivity, urlToLoad)
+                                            } else {
+                                                navController.navigate(NavRoutes.PLAYLISTS) {
+                                                    popUpTo(NavRoutes.GOOGLE_SIGN_IN) { inclusive = true }
+                                                    launchSingleTop = true
+                                                }
+                                            }
                                         }
                                     },
                                     onBack = {
@@ -217,6 +258,7 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onSignOut = {
                                         scope.launch {
+                                            com.example.auth.GoogleAuthManager.clearCredentialState(this@MainActivity)
                                             val db = AppDatabase.getDatabase(this@MainActivity)
                                             db.iptvDao().clearUsers()
                                             currentUserId = ""
@@ -257,6 +299,7 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onSignOut = {
                                         scope.launch {
+                                            com.example.auth.GoogleAuthManager.clearCredentialState(this@MainActivity)
                                             val db = AppDatabase.getDatabase(this@MainActivity)
                                             db.iptvDao().clearUsers()
                                             currentUserId = ""
@@ -324,10 +367,7 @@ class MainActivity : ComponentActivity() {
                                         if (navController.previousBackStackEntry != null) {
                                             navController.popBackStack()
                                         } else {
-                                            navController.navigate(NavRoutes.WELCOME) {
-                                                popUpTo(NavRoutes.PLAYLISTS) { inclusive = true }
-                                                launchSingleTop = true
-                                            }
+                                            handleRootExit()
                                         }
                                     },
                                     onSelectPlaylist = { host, user, pass ->
@@ -352,6 +392,7 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onSignOut = {
                                         scope.launch {
+                                            com.example.auth.GoogleAuthManager.clearCredentialState(this@MainActivity)
                                             val db = AppDatabase.getDatabase(this@MainActivity)
                                             db.iptvDao().clearUsers()
                                             currentUserId = ""
@@ -373,6 +414,7 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onNavigateToAuth = {
                                         scope.launch {
+                                            com.example.auth.GoogleAuthManager.clearCredentialState(this@MainActivity)
                                             val db = AppDatabase.getDatabase(this@MainActivity)
                                             db.iptvDao().clearUsers()
                                             currentUserId = ""

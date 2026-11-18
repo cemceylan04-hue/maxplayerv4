@@ -245,6 +245,7 @@ fun DeviceInfoScreen(
                             onProfileClick = { showProfileSheet = true },
                             onSignOutClick = {
                                 scope.launch {
+                                    com.example.auth.GoogleAuthManager.clearCredentialState(context)
                                     val db = AppDatabase.getDatabase(context)
                                     db.iptvDao().clearUsers()
                                     Toast.makeText(context, context.getString(R.string.sign_out_account), Toast.LENGTH_SHORT).show()
@@ -353,6 +354,7 @@ fun DeviceInfoScreen(
                             onProfileClick = { showProfileSheet = true },
                             onSignOutClick = {
                                 scope.launch {
+                                    com.example.auth.GoogleAuthManager.clearCredentialState(context)
                                     val db = AppDatabase.getDatabase(context)
                                     db.iptvDao().clearUsers()
                                     Toast.makeText(context, context.getString(R.string.sign_out_account), Toast.LENGTH_SHORT).show()

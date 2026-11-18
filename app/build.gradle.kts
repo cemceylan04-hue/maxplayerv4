@@ -16,10 +16,10 @@ android {
 
   defaultConfig {
     applicationId = "com.maxxplayers.tvs"
-    minSdk = 23
+    minSdk = 24
     targetSdk = 36
-    versionCode = 150
-    versionName = "1.5.0"
+    versionCode = 155
+    versionName = "1.5.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -108,6 +108,7 @@ dependencies {
   implementation(libs.androidx.credentials)
   implementation(libs.androidx.credentials.play.services)
   implementation(libs.googleid)
+  implementation("com.google.android.gms:play-services-auth:21.1.1")
   implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
